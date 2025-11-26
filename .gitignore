@@ -1,0 +1,37 @@
+# Node
+node_modules/
+dist/
+.vite/
+
+# Backend
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Config / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Logs
+*.log
+
+# Ignorar modelos pesados de Vosk
+app/vosk-server/websocket/model-es/
+app/vosk-server/websocket/vosk-model-es-0.42.zip
+
+# Ignorar binarios y archivos grandes
+*.fst
+*.carpa
+*.mdl
+*.raw
+*.zip
+*.tar
+*.gz
+*.pb
+*.bin
+*.wav

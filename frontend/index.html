@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Espacio Sommelier</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+</head>
+<body>
+  <!-- Botón para iniciar el avatar -->
+  <button id="startButton">Iniciar Avatar</button>
+
+  <!-- Botón para enviar texto al avatar -->
+  <button id="speakButton">Hablar</button>
+
+  <!-- Video donde se mostrará el avatar -->
+  <video id="avatarVideo"
+         autoplay
+         playsinline
+         style="width:640px;height:480px;background:black;">
+  </video>
+
+  <!-- Área para mostrar transcripciones -->
+  <div id="transcript" style="margin-top:10px;font-family:sans-serif;"></div>
+
+  <!-- Script principal -->
+  <script type="module" src="/src/main.js" defer></script>
+</body>
+</html>
