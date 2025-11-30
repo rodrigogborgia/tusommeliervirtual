@@ -1,0 +1,5 @@
+pdfminer.six==20231228
+sentence-transformers==3.0.1
+chromadb==0.5.3
+faiss-cpu==1.13.0
+

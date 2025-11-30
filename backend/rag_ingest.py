@@ -4,9 +4,14 @@ from chromadb.utils import embedding_functions
 from pdfminer.high_level import extract_text
 from config import CHROMA_COLLECTION
 
-client = chromadb.Client()
+# ✅ Usar persistencia en disco
+client = chromadb.PersistentClient(path="./chroma")
 collection = client.get_or_create_collection(CHROMA_COLLECTION)
-embedder = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="multi-qa-mpnet-base-dot-v1")
+
+# Embedding function
+embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name="multi-qa-mpnet-base-dot-v1"
+)
 
 def chunk_text(s, size=800, overlap=100):
     out, i = [], 0
@@ -18,7 +23,10 @@ def chunk_text(s, size=800, overlap=100):
 def ingest_pdf(pdf_path: str, doc_id: str):
     text = extract_text(pdf_path)
     chunks = chunk_text(text)
-    embeddings = [embedder(c) for c in chunks]
+
+    # ✅ Aplanar cada embedding
+    embeddings = [embedder(c)[0] for c in chunks]
+
     collection.add(
         documents=chunks,
         embeddings=embeddings,
@@ -26,3 +34,4 @@ def ingest_pdf(pdf_path: str, doc_id: str):
         metadatas=[{"doc_id": doc_id, "source": os.path.basename(pdf_path)} for _ in chunks]
     )
     return {"doc_id": doc_id, "chunks": len(chunks)}
+

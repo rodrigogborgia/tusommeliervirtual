@@ -3,7 +3,7 @@ from rag_ingest import ingest_pdf
 from config import CHROMA_COLLECTION
 import chromadb
 
-PDF_DIR = "/opt/tusommeliervirtual.com/backend/pdfs/"
+PDF_DIR = "/Users/rodrigoborgia/tusommeliervirtual/pdfs"
 
 def normalize_name(fname):
     name = os.path.splitext(fname)[0]
@@ -22,7 +22,8 @@ def main():
         print(f"[INFO] No se encontraron PDFs en {PDF_DIR}.", flush=True)
         return
 
-    client = chromadb.Client()
+    # ✅ Usar persistencia en disco
+    client = chromadb.PersistentClient(path="./chroma")
     collection = client.get_or_create_collection(CHROMA_COLLECTION)
 
     total = 0
@@ -45,3 +46,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

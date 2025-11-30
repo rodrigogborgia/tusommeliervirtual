@@ -7,7 +7,7 @@ collection = client.get_or_create_collection(CHROMA_COLLECTION)
 embedder = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="multi-qa-mpnet-base-dot-v1")
 
 def search(query: str, k: int = 5):
-    q_emb = embedder(query)
+    q_emb = embedder(query)[0]   # <-- fix aquí
     res = collection.query(query_embeddings=[q_emb], n_results=k)
     docs = res["documents"][0]
     ids = res["ids"][0]
