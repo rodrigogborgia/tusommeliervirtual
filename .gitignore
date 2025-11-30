@@ -1,9 +1,10 @@
-# Node
+# --- Node / Frontend ---
 node_modules/
 dist/
 .vite/
+frontend/dist/
 
-# Backend
+# --- Backend / Python ---
 __pycache__/
 *.pyc
 *.pyo
@@ -13,20 +14,20 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Config / secrets
+# --- Config / secrets ---
 .env
 .env.*
 *.key
 *.pem
 
-# Logs
+# --- Logs / temporales ---
 *.log
+*.tmp
 
-# Ignorar modelos pesados de Vosk
+# --- Modelos pesados (Vosk, SentenceTransformers, etc.) ---
 app/vosk-server/websocket/model-es/
 app/vosk-server/websocket/vosk-model-es-0.42.zip
-
-# Ignorar binarios y archivos grandes
+backend/all-MiniLM-L12-v2/
 *.fst
 *.carpa
 *.mdl
@@ -36,11 +37,21 @@ app/vosk-server/websocket/vosk-model-es-0.42.zip
 *.gz
 *.pb
 *.bin
+*.safetensors
 *.wav
 
-# Entorno virtual
+# --- Entorno virtual ---
 venv/
 
-# Colecciones locales de ChromaDB
+# --- Colecciones locales de ChromaDB ---
+backend/chroma/
 chroma/
 index/
+
+# --- PDFs originales (no versionar en GitHub) ---
+backend/pdfs/
+pdfs/
+
+# --- Archivos del sistema ---
+.DS_Store
+Thumbs.db
