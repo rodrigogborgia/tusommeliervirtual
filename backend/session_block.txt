@@ -1,0 +1,45 @@
+cat > /opt/tusommeliervirtual.com/backend/session_block.txt <<'EOF'
+@app.post("/api/session/start")
+def start_session():
+    if not HEYGEN_API_KEY:
+        return JSONResponse(
+            {"error": "missing_api_key", "details": "HEYGEN_API_KEY no configurado"},
+            status_code=500
+        )
+
+    url = "https://api.heygen.com/v1/streaming.create_token"
+    headers = {
+        "x-api-key": HEYGEN_API_KEY,
+        "accept": "application/json",
+        "content-type": "application/json"
+    }
+    payload = {
+        "avatarName": DEXTER_AVATAR_ID,
+        "voiceId": VOICE_ID,
+        "language": DEFAULT_LANGUAGE,
+        "quality": "high",
+        "video": True
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+    except Exception as e:
+        return JSONResponse(
+            {"error": "no_se_pudo_iniciar_sesion_heygen", "details": str(e)},
+            status_code=502
+        )
+
+    if r.status_code == 200:
+        data = r.json().get("data", {})
+        return JSONResponse({
+            "data": data,
+            "avatar_id": DEXTER_AVATAR_ID,
+            "voice_id": VOICE_ID,
+            "language": DEFAULT_LANGUAGE
+        })
+    else:
+        return JSONResponse(
+            {"error": "heygen_create_token_failed", "details": r.text},
+            status_code=r.status_code
+        )
+EOF
