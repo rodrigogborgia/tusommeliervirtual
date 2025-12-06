@@ -10,7 +10,7 @@ collection = client.get_or_create_collection(CHROMA_COLLECTION)
 
 # Embedding function
 embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="multi-qa-mpnet-base-dot-v1"
+    model_name = "all-MiniLM-L6-v2"
 )
 
 def chunk_text(s, size=800, overlap=100):

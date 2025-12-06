@@ -32,21 +32,21 @@ startButton.addEventListener("click", async () => {
   console.log("Instancia de avatar creada");
 
   // 2) Escuchar evento STREAM_READY (video + audio)
-avatar.on(StreamingEvents.STREAM_READY, (event) => {
-  console.log("=== STREAM_READY ===");
-  if (event.detail && videoElement) {
-    // Conectar el stream completo (video + audio)
-    videoElement.srcObject = event.detail;
+  avatar.on(StreamingEvents.STREAM_READY, (event) => {
+    console.log("=== STREAM_READY ===");
+    if (event.detail && videoElement) {
+      // Conectar el stream completo (video + audio)
+      videoElement.srcObject = event.detail;
 
-    // 👉 Asegurar volumen
-    videoElement.volume = 1.0; // aquí va la línea que mencionábamos
+      // 👉 Asegurar volumen
+      videoElement.volume = 1.0;
 
-    videoElement.onloadedmetadata = () => {
-      videoElement.play().catch(console.error);
-    };
-    console.log("Video + audio conectados al avatar");
-  }
-});
+      videoElement.onloadedmetadata = () => {
+        videoElement.play().catch(console.error);
+      };
+      console.log("Video + audio conectados al avatar");
+    }
+  });
 
   // 3) Escuchar otros eventos útiles
   avatar.on(StreamingEvents.AVATAR_STARTED, () => {
@@ -69,9 +69,49 @@ avatar.on(StreamingEvents.STREAM_READY, (event) => {
   console.log("Avatar iniciado con createStartAvatar");
 });
 
-// 5) Botón para enviar texto al avatar
+// 5) Botón para enviar texto al avatar (ejemplo fijo)
 speakButton.addEventListener("click", async () => {
   if (!avatar) return;
   console.log("Texto enviado con speak()");
   await avatar.speak({ text: "Hello Rodrigo, how are you today?" });
+});
+
+// 6) Búsqueda semántica en ChromaDB + hablar resultado
+document.addEventListener("DOMContentLoaded", () => {
+  const searchButton = document.getElementById("searchButton");
+  const searchInput = document.getElementById("searchInput");
+  const searchResults = document.getElementById("searchResults");
+
+  searchButton.addEventListener("click", async () => {
+    const query = searchInput.value.trim();
+    if (!query) return;
+
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&n=3`);
+      const data = await res.json();
+
+      // Mostrar resultados en pantalla
+      searchResults.innerHTML = "";
+      if (data.results && data.results.length > 0) {
+        data.results.forEach((r) => {
+          const div = document.createElement("div");
+          div.style.marginBottom = "1rem";
+          div.innerHTML = `<strong>${r.source}</strong><p>${r.text}</p>`;
+          searchResults.appendChild(div);
+        });
+
+        // 👉 Enviar el primer resultado al avatar
+        if (avatar) {
+          const topResult = data.results[0].text;
+          console.log("Enviando resultado al avatar:", topResult);
+          await avatar.speak({ text: topResult });
+        }
+      } else {
+        searchResults.textContent = "No se encontraron resultados.";
+      }
+    } catch (err) {
+      console.error("Error en búsqueda:", err);
+      searchResults.textContent = "Error en la consulta.";
+    }
+  });
 });
