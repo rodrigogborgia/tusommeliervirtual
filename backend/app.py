@@ -13,160 +13,57 @@ from fastapi.routing import APIRoute
 from dotenv import load_dotenv
 from langdetect import detect
 from sklearn.metrics.pairwise import cosine_similarity
+from pydantic import BaseModel
+import threading
 import numpy as np
-
-# --- Nuevos imports para ChromaDB ---
+import openai
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
+from orchestrator import say
+
+class SpeakRequest(BaseModel):
+    session_id: str
+    text: str
 
 load_dotenv()
 
-# --- Configuración de logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# --- Logging ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("sommelier")
 
 # --- Variables de entorno ---
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
-DEXTER_AVATAR_ID = os.getenv("DEXTER_AVATAR_ID")
+AVATAR_ID = os.getenv("AVATAR_ID")
 VOICE_ID = os.getenv("VOICE_ID")
-DEFAULT_LANGUAGE = os.getenv("LANGUAGE", "Spanish")
+LANGUAGE = os.getenv("LANGUAGE", "Spanish")
 
-# --- Frases de apertura variadas ---
-opening_phrases = [
-    "Lo que yo sé es que",
-    "Los manuales indican lo siguiente",
-    "Un documento técnico explica que",
-    "Buscando en mi memoria, aparece esto",
-    "Lo que sé sobre carnes es que",
-    "Entre mis referencias encontré que",
-    "Un texto especializado dice",
-    "Mis registros mencionan que"
-]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+openai.api_key = OPENAI_API_KEY
 
-# --- Frases de fallback variadas ---
-fallback_phrases = [
-    "¡Qué buena pregunta! ¿Podés darme más detalles para buscar en mis manuales de carnes?",
-    "Interesante tema, pero necesito que lo aclares un poco más.",
-    "No lo encontré en mis referencias, ¿querés reformular la consulta?",
-    "Me encantaría ayudarte, ¿podés precisar mejor tu duda?",
-    "No tengo referencias sobre ese tema en mis manuales, pero puedo ayudarte con cortes de carne."
-]
+# --- Inicializar ChromaDB ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND_DIST_DIR = os.path.join(BASE_DIR, "frontend", "dist")
 
-# --- Normalización de texto ---
-def normalize_text(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    # ⚠️ No eliminar guiones legítimos aquí, se maneja en clean_text
-    return text
+chroma_client = chromadb.PersistentClient(
+    path=os.path.join(BASE_DIR, "backend", "chroma"),
+    settings=Settings(anonymized_telemetry=False)
+)
 
-# --- Limpieza avanzada ---
-def clean_text(text: str) -> str:
-    text = normalize_text(text)
-    text = text.replace("\n", " ").replace("\f", " ")
-    text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text)  # elimina duplicaciones consecutivas
-    text = re.sub(r"(\w+)-\s+(\w+)", r"\1\2", text)  # une palabras cortadas por guión
-    text = re.sub(r"\b\d+\b", "", text)
-    return text.strip()
+# Intentar obtener la colección, crearla si no existe
+COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "pdf_knowledge")
+try:
+    collection = chroma_client.get_collection(COLLECTION_NAME)
+except Exception:
+    collection = chroma_client.create_collection(COLLECTION_NAME)
 
-# --- Filtro semántico más estricto ---
-def is_relevant(text: str, query: str) -> bool:
-    normalized_text = unicodedata.normalize("NFKC", text.lower())
-    query_words = [unicodedata.normalize("NFKC", w.lower()) for w in query.split() if len(w) > 3]
-    return all(word in normalized_text for word in query_words)
+embedder = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
 
-# --- Detección de idioma robusta ---
-def detect_language(text: str) -> str:
-    try:
-        lang = detect(text)
-        if lang.startswith("pt") and any(word in text.lower() for word in ["carne", "jugoso", "animal", "vino"]):
-            return "Spanish (forced)"
-        if lang.startswith("es"):
-            return "Spanish"
-        elif lang.startswith("pt"):
-            return "Portuguese"
-        else:
-            return "English"
-    except:
-        return DEFAULT_LANGUAGE
-
-# --- Longitud dinámica ---
-def dynamic_word_limit(query: str, base: int = 40, max_len: int = 70) -> int:
-    q_len = len(query.split())
-    if q_len >= 10:
-        return max_len
-    if 5 <= q_len < 10:
-        return int((base + max_len) / 2)
-    return base
-
-# --- Paráfrasis sommelier ---
-def paraphrase_sommelier(text: str) -> str:
-    text = re.sub(r"\bcojeras\b", "problemas de locomoción", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bhematomas\b", "marcas en la canal", text, flags=re.IGNORECASE)
-    text = re.sub(r"\binoc(u|o)idad\b", "seguridad alimentaria", text, flags=re.IGNORECASE)
-    text = re.sub(r"Un documento técnico explica que\s*:?\s*", "", text)
-    return text.strip()
-
-# --- Confidence con embeddings ---
-def confidence_with_embeddings(text: str, query: str) -> float:
-    try:
-# ⚠️ Cachear embeddings de documentos para performance
-        q_emb = embedder([query])[0]
-        if hasattr(text, "_cached_emb"):
-            t_emb = text._cached_emb
-        else:
-            t_emb = embedder([text])[0]
-        sim = cosine_similarity([q_emb], [t_emb])[0][0]
-        return round(float(sim), 2)
-
-    except Exception as e:
-        logger.warning(f"Confidence embedding failed: {e}")
-        return confidence_by_overlap(text, query)  # fallback al método anterior
-
-# --- Confidence por coincidencias ---
-def confidence_by_overlap(text: str, query: str) -> float:
-    query_words = query.lower().split()
-    if not query_words:
-        return 0.0
-    matches = sum(1 for w in query_words if w in text.lower())
-    return round(matches / len(query_words), 2)
-
-# --- Fallback narrativo contextual ---
-def contextual_fallback(query: str) -> str:
-    q = query.lower()
-    if "vino" in q:
-        return "No encontré referencias sobre vinos en mis manuales, pero puedo recomendarte cortes de carne para acompañar."
-    if "corte" in q or "jugoso" in q:
-        return "No encontré referencias sobre cortes jugosos, pero puedo ayudarte con otros cortes."
-    if "bienestar" in q or "animal" in q:
-        return "No encontré referencias específicas, pero puedo contarte sobre prácticas de bienestar animal en la industria."
-    return "No encontré referencias exactas, pero puedo orientarte con información general de mis manuales."
-
-# --- Multi‑fragmento narrativo ---
-def compose_multi_fragment(docs: List[str], query: str, max_words: int) -> str:
-    connectors = ["Primero", "Además", "Finalmente"]
-    used_openings = set()
-    parts = []
-    for i, doc in enumerate(docs):
-        cleaned = clean_text(doc)
-        if not is_relevant(cleaned, query):
-            continue
-        paraphrased = paraphrase_sommelier(cleaned)
-        opening = random.choice([o for o in opening_phrases if o not in used_openings] or opening_phrases)
-        used_openings.add(opening)
-        connector = connectors[i % len(connectors)]
-        snippet = " ".join(paraphrased.split()[:max_words // max(1, len(docs))])
-        parts.append(f"{connector}, {opening.lower()}: {snippet}")
-    composed = " ".join(parts)
-    return composed.strip()
+# --- FastAPI ---
+app = FastAPI()
 
 # --- Cache simple ---
-import threading
-
 class SimpleCache:
     def __init__(self, ttl_seconds: int = 300, max_items: int = 256):
         self.ttl = ttl_seconds
@@ -191,57 +88,68 @@ class SimpleCache:
         if not item:
             return None
         if time.time() - item["time"] > self.ttl:
-            del self.store[key]
+            with self.lock:
+                if key in self.store:
+                    del self.store[key]
             return None
         return item["value"]
 
     def set(self, key: str, value: Any):
-        self._prune()
-        self.store[key] = {"value": value, "time": time.time()}
+        with self.lock:
+            self._prune()
+            self.store[key] = {"value": value, "time": time.time()}
 
 cache = SimpleCache(ttl_seconds=300, max_items=256)
 
-app = FastAPI()
+# --- Helpers de texto y utilidades ---
+def normalize_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text)
 
-# --- Middleware ---
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start = time.time()
-    logger.info(f"Request: {request.method} {request.url}")
-    response = await call_next(request)
-    elapsed = round(time.time() - start, 2)
-    logger.info(f"Response: {response.status_code} {request.method} {request.url} | elapsed={elapsed}s")
-    return response
+def clean_text(text: str) -> str:
+    text = normalize_text(text)
+    text = text.replace("\n", " ").replace("\f", " ")
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\b(\w+)\s+\1\b", r"\1", text)
+    text = re.sub(r"(\w+)-\s+(\w+)", r"\1\2", text)
+    return text.strip()
 
-# --- Handler global ---
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled error on {request.method} {request.url}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "internal_error",
-            "message": "Ocurrió un error inesperado en el backend. Probá nuevamente en unos segundos.",
-            "path": str(request.url),
-        },
-    )
+# --- Helpers LLM ---
+def call_llm(prompt: str) -> str:
+    if not OPENAI_API_KEY:
+        logger.error("OPENAI_API_KEY no configurada")
+        return "Error: falta la API key de OpenAI."
 
-# --- Ajuste frontend ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONTEND_DIST_DIR = os.path.join(BASE_DIR, "frontend", "dist")
+    try:
+        response = openai.ChatCompletion.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "Eres un asistente experto que responde de forma clara y natural."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        answer = response["choices"][0]["message"]["content"].strip()
+        return answer
+    except Exception as e:
+        logger.error(f"Error llamando al LLM: {e}")
+        return "Error: no se pudo generar respuesta con el LLM."
 
-# --- Inicializar ChromaDB ---
-chroma_client = chromadb.PersistentClient(
-    path=os.path.join(BASE_DIR, "backend", "chroma"),
-    settings=Settings(anonymized_telemetry=False)
-)
-collection = chroma_client.get_collection("pdf_knowledge")
-embedder = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-
-# --- Endpoints ---
+# --- Endpoints básicos ---
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+import logging
+from orchestrator import open_session
+from config import AVATAR_ID, VOICE_ID, LANGUAGE
+
+logger = logging.getLogger("sommelier")
+
+router = APIRouter()
 
 @app.post("/api/session/start")
 def start_session():
@@ -253,107 +161,44 @@ def start_session():
 
     url = "https://api.heygen.com/v1/streaming.create_token"
     headers = {
-        "x-api-key": HEYGEN_API_KEY,
-        "accept": "application/json",
-        "content-type": "application/json"
-    }
-    payload = {
-        "avatarName": DEXTER_AVATAR_ID,
-        "voiceId": VOICE_ID,
-        "language": DEFAULT_LANGUAGE,
-        "quality": "high",
-        "video": True
+        "Authorization": f"Bearer {HEYGEN_API_KEY}",
+        "accept": "application/json"
     }
 
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        r = requests.post(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json().get("data", {})
+        token = data.get("token")
     except Exception as e:
         return JSONResponse(
-            {"error": "no_se_pudo_iniciar_sesion_heygen", "details": str(e)},
+            {"error": "heygen_create_token_failed", "details": str(e)},
             status_code=502
         )
 
-    if r.status_code == 200:
-        data = r.json().get("data", {})
-        return JSONResponse({
-            "data": data,
-            "avatar_id": DEXTER_AVATAR_ID,
-            "voice_id": VOICE_ID,
-            "language": DEFAULT_LANGUAGE
-        })
-    else:
-        return JSONResponse(
-            {"error": "heygen_create_token_failed", "details": r.text},
-            status_code=r.status_code
-        )
+    logger.info(f"Token creado: {token}")
 
-def search(q: str = Query(...), n: int = Query(3)):
-    start = time.time()
-    cache_key = f"search:{q}:{n}"
-    cached = cache.get(cache_key)
-    if cached:
-        return cached
+    return JSONResponse({
+        "token": token,
+        "avatar_id": AVATAR_ID,
+        "voice_id": VOICE_ID,
+        "language": LANGUAGE
+    })
 
-    # Embedding de la query
-    query_embedding = embedder([q])
-    results = collection.query(query_embeddings=query_embedding, n_results=n)
+sessions = {}
 
-    # --- Fallback narrativo si no hay documentos ---
-    if not results["documents"] or not results["documents"][0]:
-        fb = contextual_fallback(q)
-        payload = {
-            "results": [
-                {"source": "none", "text": fb, "page": None, "confidence": None}
-            ],
-            "summary": f"Primero, lo que sé es que: {fb}"
-        }
-        cache.set(cache_key, payload)
-        return payload
-
-    # --- Filtro semántico más estricto ---
-    formatted = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        if is_relevant(doc, q):  # exige que todas las palabras clave estén presentes
-            cleaned = clean_text(doc)
-            paraphrased = paraphrase_sommelier(cleaned)
-            conf = confidence_with_embeddings(paraphrased, q)
-            formatted.append({
-                "source": meta.get("source", "unknown"),
-                "page": meta.get("page", None),
-                "confidence": conf,
-                "text": paraphrased
-            })
-
-    # --- Fallback narrativo si todo fue descartado ---
-    if not formatted:
-        fb = contextual_fallback(q)
-        payload = {
-            "results": [
-                {"source": "none", "text": fb, "page": None, "confidence": None}
-            ],
-            "summary": f"Primero, lo que sé es que: {fb}"
-        }
-        cache.set(cache_key, payload)
-        return payload
-
-    # --- Armar summary narrativo con conectores ---
-    summary_parts = []
-    if len(formatted) >= 1:
-        opening = random.choice(opening_phrases)
-        summary_parts.append(f"Primero, mis registros mencionan que: {formatted[0]['text']}")
-    if len(formatted) >= 2:
-        summary_parts.append(f"Además, un texto especializado dice: {formatted[1]['text']}")
-    if len(formatted) >= 3:
-        summary_parts.append(f"Finalmente, lo que sé sobre carnes es que: {formatted[2]['text']}")
-
-    payload = {
-        "results": formatted,
-        "summary": " ".join(summary_parts)
-    }
-
-    cache.set(cache_key, payload)
-    logger.info(f"/api/search completed in {time.time() - start:.2f}s")
-    return payload
+@app.post("/api/session/register")
+def register_session(req: dict):
+    """
+    El frontend debe llamar a este endpoint justo después de createStartAvatar,
+    enviando { "session_id": ..., "access_token": ... }.
+    """
+    sid = req.get("session_id")
+    token = req.get("access_token")
+    if sid and token:
+        sessions[sid] = token
+        return {"status": "ok"}
+    return {"status": "error", "details": "faltan datos"}
 
 @app.post("/api/ask")
 def ask(q: str = Query(...), n: int = Query(3)):
@@ -363,78 +208,89 @@ def ask(q: str = Query(...), n: int = Query(3)):
     if cached:
         return cached
 
+    # 1. Buscar en Chroma
     query_embedding = embedder([q])
     results = collection.query(query_embeddings=query_embedding, n_results=n)
 
-    # --- Filtro semántico más estricto ---
-    relevant_docs = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        if is_relevant(doc, q):  # exige que todas las palabras clave estén presentes
-            cleaned = clean_text(doc)
-            paraphrased = paraphrase_sommelier(cleaned)
-            relevant_docs.append(paraphrased)
+    docs = results["documents"][0]
+    sources = results["metadatas"][0]
 
-    # --- Fallback narrativo si no hay docs relevantes ---
-    if not relevant_docs:
-        fb = contextual_fallback(q)
-        answer = fb
-        meta_block = {"sources": [], "confidence_avg": None}
-        payload = {
-            "answer": answer,
-            "meta": meta_block,
-            "language": detect_language(answer),
-            "error": "heygen_no_disponible",
-            "details": "El avatar no pudo hablar en este momento, pero tu respuesta está lista en texto."
-        }
-        cache.set(cache_key, payload)
-        return payload
+    # 2. Armar prompt para el LLM
+    llm_prompt = f"""
+    Pregunta del usuario: {q}
 
-    # --- Confidence con embeddings ---
-    confidences = [confidence_with_embeddings(clean_text(d), q) for d in relevant_docs]
-    confidence_avg = round(sum(confidences) / len(confidences), 2) if confidences else None
+    Documentos encontrados:
+    {docs}
 
-    # --- Armar narrativa multi‑fragmento ---
-    answer_parts = []
-    if len(relevant_docs) >= 1:
-        answer_parts.append(f"Primero, lo que sé sobre carnes es que: {relevant_docs[0]}")
-    if len(relevant_docs) >= 2:
-        answer_parts.append(f"Además, buscando en mi memoria, aparece esto: {relevant_docs[1]}")
-    if len(relevant_docs) >= 3:
-        answer_parts.append(f"Finalmente, un documento técnico explica que: {relevant_docs[2]}")
+    Por favor:
+    - Evalúa si estos documentos son relevantes.
+    - Si lo son, sintetiza una respuesta clara y natural.
+    - Si no lo son, explica que no encontraste información exacta pero da contexto general.
+    """
 
-    answer = " ".join(answer_parts)
+    # 3. Llamar al LLM con el helper
+    answer = call_llm(llm_prompt)
 
-    used_sources = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        if is_relevant(doc, q):
-            used_sources.append(meta)
-
-    meta_block = {
-        "sources": used_sources,
-        "confidence_avg": confidence_avg
-    }
-
+    # 4. Armar payload
     payload = {
         "answer": answer,
-        "meta": meta_block,
-        "language": detect_language(answer),
-        "error": "heygen_no_disponible",
-        "details": "El avatar no pudo hablar en este momento, pero tu respuesta está lista en texto."
+        "meta": {
+            "sources": sources,
+            "confidence_avg": None  # opcional, lo dejamos como placeholder
+        },
+        "details": "Respuesta generada por LLM"
     }
 
+    # 5. Cachear y devolver
     cache.set(cache_key, payload)
     logger.info(f"/api/ask completed in {time.time() - start:.2f}s")
     return payload
 
+@app.post("/api/speak")
+def speak(req: SpeakRequest):
+    if not req.session_id or not req.text:
+        return JSONResponse(
+            {"error": "invalid_request", "details": "Faltan 'session_id' o 'text' en el body"},
+            status_code=400
+        )
+
+    # Recuperar el access_token asociado a la sesión
+    access_token = sessions.get(req.session_id)
+    if not access_token:
+        return JSONResponse(
+            {"error": "invalid_session", "details": "No se encontró access_token para esa sesión"},
+            status_code=400
+        )
+
+    try:
+        payload = {
+            "text": req.text,
+            "session_id": req.session_id,
+            "task_type": "talk",
+            "task_mode": "async"
+        }
+        resp = requests.post(
+            "https://api.heygen.com/v1/streaming.task",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload
+        )
+        resp.raise_for_status()
+        result = resp.json()
+
+        logger.info(f"Texto enviado a sesión {req.session_id}: {req.text}")
+        return JSONResponse({"status": "ok", "data": result})
+    except Exception as e:
+        logger.error(f"heygen speak failed: {e}")
+        return JSONResponse(
+            {"error": "heygen_speak_failed", "details": str(e)},
+            status_code=500
+        )
+
 @app.get("/api/routes")
 def list_routes():
-    return [
-        {"path": route.path, "methods": list(route.methods)}
-        for route in app.router.routes
-        if isinstance(route, APIRoute)
-    ]
+    return [{"path": route.path, "methods": list(route.methods)} for route in app.router.routes if isinstance(route, APIRoute)]
 
-# 👉 Servir el build del frontend
+# --- Servir frontend ---
 if os.path.exists(FRONTEND_DIST_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIST_DIR, html=True), name="frontend")
 else:

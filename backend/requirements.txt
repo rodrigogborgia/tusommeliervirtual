@@ -32,6 +32,7 @@ pdfminer.six==20231228   # versión compatible con pdfplumber
 sentence-transformers==3.0.1
 faiss-cpu==1.8.0
 chromadb==0.5.3
+openai==1.52.0
 
 # --- WebSocket client ---
 websocket-client==1.8.0
