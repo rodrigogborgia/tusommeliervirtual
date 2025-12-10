@@ -1,56 +1,79 @@
-# 🍷 Tu Sommelier Virtual – Backend
+📘 Guía rápida: Ciclo de Entrenar, Confirmar y Presentar
+🎯 Objetivo
+Mantener un flujo claro y reproducible para entrenar, confirmar y presentar respuestas en el backend, evitando duplicados en el log (qa_log.json).
 
-Este proyecto implementa un pipeline de ingesta de PDFs en **ChromaDB** para consultas semánticas en español.
+⚙️ Componentes principales
+qa_log.py
 
----
+normalize(text): limpia y normaliza queries.
 
-## 🚀 Ingesta de PDFs
+save_interaction(query, response, correction): guarda o reemplaza entradas en el log.
 
-1. Colocar los archivos PDF en la carpeta:
+find_in_log(query, threshold): busca coincidencias con fuzzy matching.
 
-backend/pdfs/
+app_flow.py
 
-2. Ejecutar la ingesta en segundo plano:
+main(mode, query, response, correction): coordina los modos de operación.
 
-nohup python -u backend/ingest_all.py > ingest.log 2>&1 &
+Entrenar → consulta al LLM y guarda la respuesta.
 
-3. Monitorear el progreso en tiempo real con timestamps:
+Confirmar → guarda la corrección, reemplazando la entrada existente.
 
-tail -f ingest.log | awk '{ print strftime("[%Y-%m-%d %H:%M:%S]"), $0 }'
+Presentar → busca en el log y devuelve la corrección o respuesta; si no existe, consulta al LLM.
 
-4. Verificar el número de documentos ya procesados:
+server.py
 
-python backend/check_ingest.py
+Expone endpoints REST (/api/query, /api/session, /api/speak).
 
-📊 Logs y chunks
-Cada PDF se divide en chunks (fragmentos de texto) que se indexan en ChromaDB.
+Llama a app_flow.main para ejecutar la lógica.
 
-El log muestra:
+🔄 Flujo de trabajo
+Entrenar
 
-[INFO] Procesando: ... → inicio de un PDF.
+Input: {"mode":"Entrenar","query":"..."}
 
-[OK] Ingestado: {...} → PDF terminado con cantidad de chunks.
+Acción: consulta al LLM y guarda la respuesta en el log.
 
-[INFO] Total documentos ahora: X → contador acumulado.
+Resultado: una sola entrada por query.
 
-⚠️ Nota importante
-Los resultados de la ingesta (colección ChromaDB) NO se versionan en GitHub.
+Confirmar
 
-El repositorio contiene únicamente los scripts y configuración necesarios para regenerar la base.
+Input: {"mode":"Confirmar","query":"...","response":"...","correction":"..."}
 
-Para reconstruir la colección, basta con volver a ejecutar ingest_all.py con los PDFs en la carpeta backend/pdfs/.
+Acción: reemplaza la entrada existente con la corrección.
 
-🛠️ Dependencias
-Instalar las dependencias desde requirements.txt:
+Resultado: la query queda actualizada con la última versión.
 
-pip install -r requirements.txt
+Presentar
 
-✅ Estado actual
-Ingesta estable validada en VPS.
+Input: {"mode":"Presentar","query":"..."}
 
-10 PDFs procesados con éxito en la colección ChromaDB.
+Acción: busca en el log; si existe, devuelve la corrección o respuesta.
 
-Scripts versionados en GitHub para reproducibilidad.
+Si no existe, consulta al LLM (pero no guarda).
 
+🧹 Mantenimiento del log
+qa_log_cleaner.py
 
----
+Elimina duplicados y entradas inválidas.
+
+Genera qa_log_clean.json con una sola versión por query.
+
+Puede ejecutarse manualmente o programarse con cron.
+
+✅ Ejemplo de uso con curl
+bash
+# Entrenar
+curl -X POST http://localhost:8000/api/query \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"Entrenar","query":"¿Cuál es el maridaje ideal para un ojo de bife?"}'
+
+# Confirmar
+curl -X POST http://localhost:8000/api/query \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"Confirmar","query":"¿Cuál es el maridaje ideal para un ojo de bife?","response":"Un ojo de bife combina bien con vinos tintos robustos.","correction":"Recomiendo un Malbec argentino, por su cuerpo y notas frutales."}'
+
+# Presentar
+curl -X POST http://localhost:8000/api/query \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"Presentar","query":"¿Cuál es el maridaje ideal para un ojo de bife?"}'

@@ -1,29 +1,45 @@
-from orchestrator import start_avatar_session, say
-from rag_query import search
-from stt_client import transcribe_file  # tu módulo que usa websockets.connect
+import llm_client
+from qa_log import save_interaction, find_in_log
 
-def main():
-    # 1. Arrancar sesión con el avatar
-    session_id = start_avatar_session()
+def main(mode="Presentar", query: str = None, response: str = None, correction: str = None):
+    """
+    Flujo principal: recibe texto desde el front.
+    Más adelante se podrá reemplazar por audio con Vosk.
+    """
 
-    # 2. Transcribir un audio local (ejemplo)
-    texto_usuario = transcribe_file("test_audio.wav")
-    print("Texto reconocido:", texto_usuario)
+    # 1. Validar que haya query
+    if not query:
+        return {"error": "No se recibió ninguna consulta"}
 
-    # 3. Buscar contexto en PDFs con RAG
-    resultados = search(texto_usuario, k=3)
-    if resultados:
-        contexto = resultados[0]["text"]  # tomamos el fragmento más relevante
-        print("Fragmento encontrado:", contexto)
+    texto_usuario = query
+    instruction = "Responde como sommelier de carnes de la UBA."
+
+    # 2. Lógica según el modo
+    if mode == "Entrenar":
+        # Siempre consultamos al LLM y guardamos
+        respuesta = llm_client.ask_llm(query=texto_usuario, instruction=instruction)
+        save_interaction(texto_usuario, respuesta, correction=None)
+        return {"respuesta": respuesta}
+
+    elif mode == "Presentar":
+        # Primero buscamos en el log
+        cached = find_in_log(texto_usuario)
+        if cached:
+            respuesta = cached["correction"] or cached["response"]
+        else:
+            # Si no hay nada, consultamos al LLM pero NO guardamos
+            respuesta = llm_client.ask_llm(query=texto_usuario, instruction=instruction)
+        return {"respuesta": respuesta}
+
+    elif mode == "Confirmar":
+        # Usamos la corrección como respuesta final (si existe)
+        respuesta_final = correction if correction else response
+
+        # Guardamos en el log la respuesta original y la corrección
+        save_interaction(texto_usuario, response, correction=correction)
+
+        # Devolvemos la corrección como texto plano
+        return {"respuesta": respuesta_final}
+
     else:
-        contexto = "No encontré información en los documentos."
-
-    # 4. Generar respuesta final
-    respuesta = f"Me preguntaste: '{texto_usuario}'. Según el documento: {contexto}"
-
-    # 5. Pasar la respuesta al avatar
-    output = say(session_id, respuesta)
-    print("Respuesta del avatar:", output)
-
-if __name__ == "__main__":
-    main()
+        return {"error": "modo inválido"}

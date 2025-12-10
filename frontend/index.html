@@ -5,8 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Espacio Sommelier</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
+    button { font-size: 18px; padding: 10px 20px; margin: 10px; cursor: pointer; }
+    #trainButton { background-color: #e74c3c; color: white; }
+    #presentButton { background-color: #2ecc71; color: white; }
+    #modeBanner { font-size: 20px; font-weight: bold; padding: 10px; margin-bottom: 10px; color: white; }
+    #statusBanner { font-size: 18px; margin: 10px; color: #333; }
+    #avatarVideo { margin-top: 20px; }
+    #searchResults { margin-top: 20px; font-family: sans-serif; font-size: 18px; }
+  </style>
 </head>
 <body>
+  <h1>Espacio Sommelier</h1>
+
+  <!-- Banner que indica el modo actual -->
+  <div id="modeBanner">Modo Presentar</div>
+
+  <!-- Banner de estado -->
+  <div id="statusBanner"></div>
+
+  <!-- Botones para elegir modo -->
+  <button id="trainButton">Entrenar</button>
+  <button id="presentButton">Presentar</button>
+
   <!-- Botón para iniciar el avatar -->
   <button id="startButton">Iniciar Avatar</button>
 
@@ -28,9 +50,10 @@
   <button id="searchButton">Buscar</button>
 
   <!-- Resultados -->
-  <div id="searchResults" style="margin-top:10px;font-family:sans-serif;"></div>
+  <div id="searchResults"></div>
 
   <!-- Script principal -->
-  <script type="module" src="/src/main.js" defer></script>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
+
