@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Espacio Sommelier</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <!-- Usamos solo el CSS externo -->
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- Selector de micrófono -->
+  <select id="micSelect"></select>
+
+  <!-- Botón inicial -->
+  <button id="startButton">Iniciar Avatar</button>
+
+  <!-- (Controles de prueba removidos) -->
+
+  <!-- Contenedor del avatar -->
+  <div id="avatarContainer">
+    <!-- Video del avatar -->
+    <video id="avatarVideo" autoplay playsinline></video>
+
+    <!-- Contenedor para transcripción en vivo -->
+    <div id="transcript"></div>
+  </div>
+
+  <!-- Script principal -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+requests
+openai
+python-dotenv
+python-multipart
+rapidfuzz
+websockets>=12.0
+faster-whisper>=1.1.0
+numpy>=1.26.0

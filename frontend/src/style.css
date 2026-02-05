@@ -1,0 +1,91 @@
+/* Tipografía y fondo */
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  --bg-color: #003366; /* fondo azul oscuro (escuchando) */
+  background-color: var(--bg-color);
+  color: #f5f5f5;
+  display: flex;
+  flex-direction: column; /* apilar selector, botón y luego video */
+  justify-content: center;
+  align-items: center;
+}
+
+body.speaking {
+  --bg-color: #d9f0ff; /* azul muy claro al hablar */
+  background-color: var(--bg-color);
+}
+
+body.hearing {
+  --bg-color: #2f5f8f; /* azul intermedio al oír al usuario */
+  background-color: var(--bg-color);
+}
+
+/* Selector de micrófono */
+#micSelect {
+  margin-bottom: 1rem;
+  font-size: 1rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  border: none;
+  background: #222;
+  color: #f5f5f5;
+}
+
+/* Botón Iniciar Avatar */
+#startButton {
+  font-size: 2rem;
+  padding: 1rem 2rem;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #d4af37, #b8860b); /* dorado degradado */
+  color: #111;
+  transition: all 0.3s ease;
+  margin-bottom: 1rem;
+}
+
+#startButton:hover {
+  opacity: 0.9;
+  transform: scale(1.05);
+}
+
+
+/* Contenedor del avatar */
+#avatarContainer {
+  display: none;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-color);
+  position: relative; /* 👈 para superponer transcript */
+  overflow: hidden;   /* evita desbordes */
+}
+
+/* Video avatar ajustado al viewport */
+#avatarVideo {
+  max-width: 100vw;   /* nunca más ancho que la pantalla */
+  height: 100vh;      /* llenar alto para evitar margen inferior */
+  width: auto;
+  object-fit: contain; /* ajusta sin recortar */
+  background: var(--bg-color);
+  display: block;
+  margin: 0 auto;      /* centrar horizontalmente */
+}
+
+/* Transcript en vivo */
+#transcript {
+  position: absolute;
+  bottom: 5%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.6);
+  color: #f5f5f5;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  max-width: 80%;
+  text-align: center;
+}

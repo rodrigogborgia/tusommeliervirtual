@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STT Test (sin avatar)</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/src/style.css" />
+  <style>
+    .stt-wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .row > * { margin: 4px 0; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; opacity: 0.9; }
+    .btn { padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.18); background: rgba(0,0,0,0.12); color: inherit; cursor: pointer; }
+    .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+    #transcript { margin-top: 12px; }
+    #transcript p { margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <div class="stt-wrap">
+    <h2>Prueba STT (sin HeyGen / sin video)</h2>
+    <div class="row">
+      <label for="micSelect"><b>Micrófono:</b></label>
+      <select id="micSelect"></select>
+      <button class="btn" id="btnStart">Empezar escucha</button>
+      <button class="btn" id="btnStop" disabled>Detener</button>
+    </div>
+
+    <div class="row status" style="margin-top: 8px;">
+      <div><b>Backend:</b> <span id="backendStatus">?</span></div>
+      <div><b>WS:</b> <span id="wsStatus">desconectado</span></div>
+      <div><b>Estado:</b> <span id="listenStatus">idle</span></div>
+    </div>
+
+    <div id="transcript"></div>
+
+    <div style="margin-top: 14px;">
+      <h3 style="margin: 10px 0;">Último audio (para debug)</h3>
+      <div class="row">
+        <audio id="lastAudio" controls></audio>
+        <a class="btn" id="downloadWav" href="#" download="utterance.wav" style="text-decoration:none;">Descargar WAV</a>
+      </div>
+      <div class="status">Tip: si no escuchás nada acá, el problema es antes de STT (captura/VAD).</div>
+    </div>
+
+    <p class="status" style="margin-top: 10px;">
+      Tip: hablá una frase y quedate en silencio ~1s. Vas a ver <b>Usuario</b> (STT) y <b>Sistema</b> (respuesta del backend).
+    </p>
+  </div>
+
+  <script type="module" src="/src/stt.js"></script>
+</body>
+</html>
+

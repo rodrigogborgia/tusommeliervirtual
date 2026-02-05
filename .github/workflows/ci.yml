@@ -1,0 +1,56 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      # --- Backend ---
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Show installed packages
+        run: pip list | grep openai
+
+      - name: Prepare log dir for tests
+        run: mkdir -p logs
+
+      - name: Run pytest (backend only)
+        run: LOG_DIR=./logs pytest tests/test_app_flow.py tests/test_qa_log.py --maxfail=1 --disable-warnings -q
+
+  env-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest python-dotenv
+
+      - name: Run env validation tests
+        env:
+          HEYGEN_API_KEY: ${{ secrets.HEYGEN_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AVATAR_ID: Dexter_Lawyer_Sitting_public
+          VOICE_ID: 1a32e06dde934e69ba2a98a71675dc16
+          LANGUAGE: Spanish
+        run: pytest tests/test_env.py

@@ -1,0 +1,45 @@
+# --- Node / Frontend ---
+node_modules/
+dist/
+.vite/
+frontend/dist/
+frontend/node_modules/
+
+# --- Backend / Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.db
+*.sqlite3
+.pytest_cache/
+
+# --- Config / secrets ---
+.env
+.env.*
+env
+*.key
+*.pem
+
+# --- Logs / temporales ---
+*.log
+*.tmp
+logs/
+
+# --- Audio / modelos pesados ---
+*.wav
+*.safetensors
+*.bin
+
+# --- Entorno virtual ---
+venv/
+backend/venv/
+frontend/venv/
+
+# --- Archivos del sistema ---
+.DS_Store
+Thumbs.db
+
+# --- Archivos de prueba / temporales ---
+*_test.py
+*_prueba.py
+*.tmp

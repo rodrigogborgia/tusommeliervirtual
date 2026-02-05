@@ -1,0 +1,57 @@
+name: Deploy Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]   # 👈 nombre exacto del workflow de tests (ci.yml)
+    types:
+      - completed
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}  # 👈 solo si CI pasó
+    runs-on: ubuntu-latest
+    env:
+      PIPELINE_NAME: "sommelier-deploy-pipeline"
+      BUILD_ID: ${{ github.run_id }}
+      COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Show pipeline metadata
+        run: |
+          echo "Pipeline: $PIPELINE_NAME"
+          echo "Build ID: $BUILD_ID"
+          echo "Commit SHA: $COMMIT_SHA"
+
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/tusommeliervirtual.com
+            git pull origin main
+
+            # --- Backend ---
+            pip install -r requirements.txt
+
+            # --- Frontend ---
+            cd frontend && npm ci && npm run build
+
+            # --- Actualizar systemd service ---
+            sudo cp infra/sommelier-backend.service /etc/systemd/system/sommelier-backend.service
+            sudo systemctl daemon-reload
+
+            # --- Reiniciar servicio ---
+            sudo systemctl restart sommelier-backend
+
+            # --- Log metadata en servidor ---
+            echo "Deploy ejecutado con PIPELINE_NAME=$PIPELINE_NAME, BUILD_ID=$BUILD_ID, COMMIT_SHA=$COMMIT_SHA"
+            # --- Exportar metadata para backend ---
+            echo "PIPELINE_NAME=${PIPELINE_NAME}" | sudo tee /etc/environment
+            echo "BUILD_ID=${BUILD_ID}" | sudo tee -a /etc/environment
+            echo "COMMIT_SHA=${COMMIT_SHA}" | sudo tee -a /etc/environment
+
+            

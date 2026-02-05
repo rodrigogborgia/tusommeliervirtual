@@ -1,0 +1,18 @@
+{
+  "name": "tusommeliervirtual-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@heygen/streaming-avatar": "^2.1.0",
+    "livekit-client": "^2.16.0",
+    "protobufjs": "^7.5.4"
+  },
+  "devDependencies": {
+    "vite": "^5.4.21"
+  }
+}

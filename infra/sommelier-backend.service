@@ -1,0 +1,18 @@
+[Unit]
+Description=Sommelier Backend (FastAPI + Uvicorn)
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/opt/tusommeliervirtual.com
+EnvironmentFile=/opt/tusommeliervirtual.com/.env
+EnvironmentFile=/etc/environment
+
+ExecStart=/opt/tusommeliervirtual.com/venv/bin/uvicorn backend.server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

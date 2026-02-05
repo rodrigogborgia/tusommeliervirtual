@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STT Browser Sync (solo eventos)</title>
+    <style>
+      body { background:#0b0f14; color:#e6edf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:0; }
+      .wrap { max-width: 920px; margin: 0 auto; padding: 18px; }
+      .row { display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }
+      button { padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06); color: inherit; cursor:pointer; }
+      button[disabled] { opacity: 0.5; cursor:not-allowed; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .hint { opacity: 0.85; margin-top: 10px; line-height: 1.35; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h2>STT del navegador (solo sincronizador)</h2>
+      <div class="row">
+        <button id="btnStart">Iniciar escucha</button>
+        <button id="btnStop" disabled>Detener</button>
+      </div>
+      <div class="hint">
+        - Mira la consola: imprime <code>STT_START: &lt;ms&gt;</code> y <code>STT_END: &lt;ms&gt;, "texto"</code><br/>
+        - El START/END se detecta por <b>resultados</b> del SpeechRecognition (más confiable que onspeechstart/onspeechend).<br/>
+        - Recomendado: Chrome/Edge en <code>http://localhost</code>.
+      </div>
+    </div>
+
+    <script>
+      "use strict";
+
+      const btnStart = document.getElementById("btnStart");
+      const btnStop = document.getElementById("btnStop");
+
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        console.error("SpeechRecognition no disponible en este navegador.");
+      }
+
+      const REC = new SR();
+      REC.lang = "es-AR";
+      REC.interimResults = false;
+      REC.continuous = false;
+
+      REC.onerror = (e) => {
+        console.warn("REC_ERROR", { error: e?.error, message: e?.message, type: e?.type });
+        // Si estábamos en una frase, la cerramos para no quedar colgados.
+       };
+
+      REC.onspeechstart = () => {
+        console.log("SPEECH START");
+      };
+
+      REC.onresult = (e) => {
+        let s = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) 
+        {
+          const res = e.results[i];
+          if (res.isFinal)
+            s += res[0].transcript;
+        }
+        if (s!="")
+          console.log("SPEECH RESULT", s);
+      };
+
+      //Este
+      REC.onspeechend = () => {
+        console.log("SPEECH END");
+      };
+
+      //Este
+      REC.onend = () => {
+        console.log("END");
+      };
+
+
+      function stopRec() {
+        REC.stop();
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+      }
+
+      function startRec() {
+        REC.start();
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+      }
+
+
+
+      btnStart.addEventListener("click", startRec);
+      btnStop.addEventListener("click", stopRec);
+    </script>
+  </body>
+</html>
