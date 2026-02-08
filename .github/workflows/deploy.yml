@@ -32,26 +32,35 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd /opt/tusommeliervirtual.com
-            git pull origin main
+
+            # --- Traer cambios del repo ---
+            git fetch origin
+            git reset --hard origin/main
 
             # --- Backend ---
+            source venv/bin/activate
             pip install -r requirements.txt
+            pip check
 
             # --- Frontend ---
-            cd frontend && npm ci && npm run build
+            cd frontend
+            npm ci
+            npm run build
+            echo "Frontend build terminado en $(date)"
 
             # --- Actualizar systemd service ---
+            cd ..
             sudo cp infra/sommelier-backend.service /etc/systemd/system/sommelier-backend.service
             sudo systemctl daemon-reload
 
             # --- Reiniciar servicio ---
             sudo systemctl restart sommelier-backend
+            sudo systemctl status sommelier-backend --no-pager
 
             # --- Log metadata en servidor ---
             echo "Deploy ejecutado con PIPELINE_NAME=$PIPELINE_NAME, BUILD_ID=$BUILD_ID, COMMIT_SHA=$COMMIT_SHA"
+
             # --- Exportar metadata para backend ---
             echo "PIPELINE_NAME=${PIPELINE_NAME}" | sudo tee /etc/environment
             echo "BUILD_ID=${BUILD_ID}" | sudo tee -a /etc/environment
             echo "COMMIT_SHA=${COMMIT_SHA}" | sudo tee -a /etc/environment
-
-            
