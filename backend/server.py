@@ -5,7 +5,7 @@ import json
 import uuid
 from starlette.websockets import WebSocketState
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.routing import APIRoute
 from contextlib import asynccontextmanager
@@ -14,9 +14,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 from .app_flow import main as run_flow
-from .session_store import sessions
-from .audio_utils import AudioBuffer, pcm_to_wav, is_valid_transcription, should_transcribe_phrase
-from .stt_local import transcribe_pcm16_phrase
+from .audio_utils import is_valid_transcription
 from qa_log import QALog
 
 qa_logger = QALog()
@@ -62,9 +60,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sommelier")
 
-HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
-AVATAR_ID = os.getenv("AVATAR_ID", "Dexter_Lawyer_Sitting_public")
-VOICE_ID = os.getenv("VOICE_ID", "1a32e06dde934e69ba2a98a71675dc16")
+LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY")
+LIVEAVATAR_API_URL = os.getenv("LIVEAVATAR_API_URL", "https://api.liveavatar.com")
+AVATAR_ID = os.getenv("AVATAR_ID", "fc9c1f9f-bc99-4fd9-a6b2-8b4b5669a046")
 LANGUAGE = os.getenv("LANGUAGE", "Spanish")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PIPELINE_NAME = os.getenv("PIPELINE_NAME", "unknown-pipeline")
@@ -73,7 +71,6 @@ COMMIT_SHA = os.getenv("COMMIT_SHA", "unknown-commit")
 
 # --- Cliente OpenAI (opcional para permitir levantar sin secrets en dev) ---
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-STT_MODE = (os.getenv("STT_MODE") or "openai").strip().lower()
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -82,9 +79,9 @@ from fastapi import FastAPI
 async def lifespan(app: FastAPI):
     # 👉 logs de entorno solo al arrancar
     logger.info(f"ENV cargado desde: {_ENV_LOADED_FROM or 'entorno'}")
-    logger.info(f"HEYGEN_API_KEY presente: {bool(HEYGEN_API_KEY)}")
+    logger.info(f"LIVEAVATAR_API_KEY presente: {bool(LIVEAVATAR_API_KEY)}")
     logger.info(f"OPENAI_API_KEY presente: {bool(OPENAI_API_KEY)}")
-    logger.info(f"AVATAR_ID={AVATAR_ID}, VOICE_ID={VOICE_ID}, LANGUAGE={LANGUAGE}")
+    logger.info(f"AVATAR_ID={AVATAR_ID}, LANGUAGE={LANGUAGE}")
     logger.info(f"PIPELINE_NAME={PIPELINE_NAME}, BUILD_ID={BUILD_ID}, COMMIT_SHA={COMMIT_SHA}")
     yield
     # 👉 acá podrías poner cleanup al apagar
@@ -100,69 +97,141 @@ class SpeakRequest(BaseModel):
     session_id: str
     text: str
 
-class RegisterSessionRequest(BaseModel):
-    session_id: str
-    access_token: str
-
 # --- Endpoints REST ---
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
 
+def _language_code(lang: str) -> str:
+    """Mapea LANGUAGE a código para LiveAvatar (es, en, etc.)."""
+    if not lang:
+        return "es"
+    lower = lang.strip().lower()
+    if "spanish" in lower or lower == "es" or lower == "español":
+        return "es"
+    if "english" in lower or lower == "en":
+        return "en"
+    return "es"
+
+
 @app.post("/api/session/start")
 def start_session():
-    if not HEYGEN_API_KEY:
-        return JSONResponse({"error": "missing_api_key"}, status_code=500)
-
-    url = "https://api.heygen.com/v1/streaming.create_token"
+    if not (LIVEAVATAR_API_KEY and LIVEAVATAR_API_KEY.strip()):
+        return JSONResponse(
+            {"error": "missing_api_key", "details": "LIVEAVATAR_API_KEY es requerida en env"},
+            status_code=500,
+        )
+    url = f"{LIVEAVATAR_API_URL.rstrip('/')}/v1/sessions/token"
     headers = {
-        "x-api-key": HEYGEN_API_KEY,
-        "accept": "application/json"
+        "X-API-KEY": LIVEAVATAR_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    body = {
+        "mode": "FULL",
+        "avatar_id": AVATAR_ID,
+    }
+    body["avatar_persona"] = {
+        "language": _language_code(LANGUAGE),
     }
     try:
-        r = requests.post(url, headers=headers, timeout=15)
-        r.raise_for_status()
-        data = r.json().get("data", {}) or {}
-        # Evitar loguear tokens en claro
-        redacted = dict(data)
-        if "token" in redacted and redacted["token"]:
-            redacted["token"] = f"<redacted len={len(str(redacted['token']))}>"
-        logger.info(f"HeyGen /streaming.create_token OK: {redacted}")
-
-        session_token = data.get("token")
-        if not session_token:
+        r = requests.post(url, headers=headers, json=body, timeout=15)
+        if r.status_code != 200:
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = r.text or str(r.status_code)
+            logger.error(f"LiveAvatar API error {r.status_code}: {err_body}")
+            hint = ""
+            if r.status_code == 422 and "avatar_id" in str(err_body).lower() and "uuid" in str(err_body).lower():
+                hint = " En Live Avatar, AVATAR_ID debe ser un UUID de tu cuenta en app.liveavatar.com."
             return JSONResponse(
-                {"error": "invalid_session_data", "details": data},
-                status_code=500
+                {
+                    "error": "liveavatar_create_token_failed",
+                    "details": err_body,
+                    "hint": hint.strip() or None,
+                    "status_code": r.status_code,
+                },
+                status_code=502,
             )
-
-        import uuid
-        session_id = str(uuid.uuid4())
-        sessions[session_id] = session_token
-
-        # 🔎 Debug extra (sin exponer token)
-        logger.info(f"[TOKEN DEBUG] Nuevo session_id={session_id}, token_len={len(session_token)}")
-
-        return {
-            "token": session_token,
-            "session_id": session_id,
-            "avatar_id": AVATAR_ID,
-            "voice_id": VOICE_ID,
-            "language": LANGUAGE
+        data = r.json()
+        token = None
+        if isinstance(data.get("data"), dict):
+            token = data["data"].get("token") or data["data"].get("session_token")
+        if not token:
+            token = data.get("token") or data.get("session_token")
+        if not token:
+            logger.error(f"LiveAvatar token response sin token: {list(data.keys())}")
+            return JSONResponse(
+                {"error": "invalid_session_data", "details": "no token in response"},
+                status_code=500,
+            )
+        logger.info(f"LiveAvatar /v1/sessions/token OK, token_len={len(str(token))}")
+        start_url = f"{LIVEAVATAR_API_URL.rstrip('/')}/v1/sessions/start"
+        start_headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
-    except Exception as e:
-        logger.error(f"Error creando token de HeyGen: {e}")
+        r_start = requests.post(start_url, headers=start_headers, timeout=15)
+        try:
+            start_data = r_start.json()
+        except Exception:
+            start_data = {}
+        info = start_data.get("data") or start_data
+        # Algunas versiones de la API devuelven 200 con code en cuerpo, o datos útiles con otro status
+        if r_start.status_code != 200:
+            # Si aun así trae datos de sesión (p. ej. code 1000 = éxito en cuerpo), intentar usarlos
+            livekit_url = info.get("livekit_url")
+            livekit_client_token = info.get("livekit_client_token")
+            session_id = info.get("session_id")
+            if livekit_url and livekit_client_token:
+                logger.info(f"LiveAvatar start: HTTP {r_start.status_code} pero body con sesión OK, session_id={session_id}")
+            else:
+                logger.error(f"LiveAvatar /v1/sessions/start error {r_start.status_code}: {start_data}")
+                return JSONResponse(
+                    {
+                        "error": "liveavatar_start_failed",
+                        "details": start_data.get("message") or start_data.get("error") or str(r_start.status_code),
+                        "status_code": r_start.status_code,
+                    },
+                    status_code=502,
+                )
+        else:
+            session_id = info.get("session_id")
+        livekit_url = info.get("livekit_url")
+        livekit_client_token = info.get("livekit_client_token")
+        session_id = info.get("session_id")
+        if not livekit_url or not livekit_client_token:
+            logger.error(f"LiveAvatar start sin livekit_url/token: {list(info.keys())}")
+            return JSONResponse(
+                {"error": "invalid_session_data", "details": "no livekit_url or livekit_client_token"},
+                status_code=500,
+            )
+        logger.info(f"LiveAvatar /v1/sessions/start OK, session_id={session_id}")
+        return {
+            "token": livekit_client_token,
+            "session_id": None,
+            "prestarted": True,
+            "livekit_url": livekit_url,
+            "livekit_client_token": livekit_client_token,
+            "liveavatar_session_id": session_id,
+            "avatar_id": AVATAR_ID,
+            "language": _language_code(LANGUAGE),
+        }
+    except requests.RequestException as e:
+        logger.error(f"Error creando token de LiveAvatar: {e}")
         return JSONResponse(
-            {"error": "heygen_create_token_failed", "details": str(e)},
-            status_code=502
+            {"error": "liveavatar_create_token_failed", "details": str(e)},
+            status_code=502,
         )
 
-@app.post("/api/session/register")
-def register_session(req: RegisterSessionRequest):
-    sessions[req.session_id] = req.access_token
-    logger.info(f"Session {req.session_id} registrada con access_token")
+class QALogRequest(BaseModel):
+    query: str
+    response: str
+    correction: str | None = None
+    metrics: dict | None = None
 
-    return {"status": "ok"}
 
 @app.post("/api/query")
 async def query_endpoint(request: Request):
@@ -174,19 +243,36 @@ async def query_endpoint(request: Request):
     if not OPENAI_API_KEY:
         return JSONResponse({"error": "missing_openai_api_key"}, status_code=500)
 
+    # skip_save=True: el frontend enviará métricas completas vía /api/qa/log
     res = run_flow(
         mode=mode,
         query=query,
         response=data.get("response"),
-        correction=data.get("correction")
+        correction=data.get("correction"),
+        skip_save=True,
     )
 
-    # 👉 El backend ya no dispara voz, solo devuelve el texto
     respuesta_texto = res.get("respuesta", "")
+    llm_time_ms = res.get("llm_time_ms")
 
     logger.info(f"Respuesta generada en /api/query: {respuesta_texto}")
 
-    return {"respuesta": respuesta_texto}
+    out = {"respuesta": respuesta_texto}
+    if llm_time_ms is not None:
+        out["llm_time_ms"] = llm_time_ms
+    return out
+
+
+@app.post("/api/qa/log")
+def qa_log_endpoint(req: QALogRequest):
+    """Recibe métricas completas del frontend y las guarda en qa_log.jsonl."""
+    qa_logger.save_interaction(
+        query=req.query,
+        response=req.response,
+        correction=req.correction,
+        client_metrics=req.metrics if req.metrics is not None else {},
+    )
+    return {"status": "ok"}
 
 @app.post("/api/speak")
 def speak(req: SpeakRequest):
@@ -199,117 +285,6 @@ def speak(req: SpeakRequest):
     # 👉 El backend solo devuelve el texto, el frontend dispara la voz con avatar.addTask
     return {"status": "ok", "text": req.text}
 
-# --- Función auxiliar para procesar audio ---
-async def procesar_audio_phrase(websocket: WebSocket, phrase: bytes):
-    qa_logger.mark("stt_start")
-    ok, metrics = should_transcribe_phrase(phrase)
-    if not ok:
-        # Debug a consola: si no ves [STT_CALL], probablemente estás cayendo acá (frase muy corta o muy silenciosa).
-        try:
-            print(
-                f"[STT_SKIP] mode={STT_MODE} bytes={len(phrase)} "
-                f"dur={metrics.get('duration_sec', 0.0):.2f}s "
-                f"rms={metrics.get('rms', 0.0):.1f} peak={metrics.get('peak', 0.0):.0f}"
-            )
-        except Exception:
-            pass
-        logger.info(
-            f"Frase descartada antes de Whisper (probable silencio/ruido): "
-            f"dur={metrics['duration_sec']:.2f}s rms={metrics['rms']:.1f} peak={metrics['peak']}"
-        )
-        return
-
-    try:
-        # Debug a consola: correlaciona audio->transcripción con un phrase_id,
-        # y opcionalmente guarda el WAV exacto enviado a STT.
-        phrase_id = uuid.uuid4().hex[:10]
-        try:
-            dur = float(metrics.get("duration_sec", 0.0))
-            rms = float(metrics.get("rms", 0.0))
-            peak = float(metrics.get("peak", 0.0))
-        except Exception:
-            dur, rms, peak = 0.0, 0.0, 0.0
-
-        debug_save_wav = (os.getenv("STT_DEBUG_SAVE_WAV") or "").strip().lower() in ("1", "true", "yes", "y")
-        debug_wav_path = None
-        if debug_save_wav:
-            try:
-                repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                wav_dir = (os.getenv("STT_DEBUG_WAV_DIR") or os.path.join(repo_root, "logs", "stt_audio")).strip()
-                os.makedirs(wav_dir, exist_ok=True)
-                debug_wav_path = os.path.join(wav_dir, f"phrase_{phrase_id}.wav")
-                with open(debug_wav_path, "wb") as f:
-                    f.write(pcm_to_wav(phrase).read())
-            except Exception as e:
-                logger.warning(f"No se pudo guardar WAV de debug: {e}")
-                debug_wav_path = None
-
-        print(
-            f"[STT_CALL] id={phrase_id} mode={STT_MODE} bytes={len(phrase)} "
-            f"dur={dur:.2f}s rms={rms:.1f} peak={peak:.0f}"
-            + (f" wav='{debug_wav_path}'" if debug_wav_path else "")
-        )
-
-        if STT_MODE == "local":
-            text = (transcribe_pcm16_phrase(phrase) or "").strip()
-            qa_logger.mark("stt_done")
-            qa_logger.diff("stt_start", "stt_done")
-            logger.info(f"Transcripción faster-whisper: {text}")
-        else:
-            wav_buf = pcm_to_wav(phrase)
-            if not client:
-                raise RuntimeError("OPENAI_API_KEY no configurada (necesaria para transcribir con Whisper)")
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=wav_buf,
-                language="es",
-                temperature=0.0
-            )
-            qa_logger.mark("stt_done")
-            qa_logger.diff("stt_start", "stt_done")
-
-            text = (transcript.text or "").strip()
-            logger.info(f"Transcripción Whisper: {text}")
-
-        # Resultado a consola (para debug rápido)
-        print(f"[STT_RESULT] id={phrase_id} text={text!r}")
-
-        if is_valid_transcription(text):
-            respuesta = run_flow(mode="Presentar", query=text)
-            respuesta_texto = respuesta.get("respuesta", "")
-
-            # 👉 Enviar solo el texto y la respuesta al frontend
-            try:
-                if websocket.application_state == WebSocketState.CONNECTED:
-                    await websocket.send_text(json.dumps({
-                        "text": text,
-                        "respuesta": respuesta_texto
-                    }))
-                else:
-                    logger.info("WS ya cerrado, no se envía respuesta")
-            except WebSocketDisconnect:
-                logger.info("WS desconectado al intentar enviar respuesta")
-
-        else:
-            logger.info(f"Transcripción descartada: {text}")
-
-    except Exception as e:
-        logger.error(f"Transcripción fallida: {e}")
-        try:
-            print(f"[STT_ERROR] id={phrase_id} err={str(e)!r}")
-        except Exception:
-            pass
-        try:
-            if websocket.application_state == WebSocketState.CONNECTED:
-                await websocket.send_text(json.dumps({
-                    "error": "transcription_failed",
-                    "details": str(e)
-                }))
-            else:
-                logger.info("WS ya cerrado, no se envía mensaje de error")
-        except WebSocketDisconnect:
-            logger.info("WS desconectado al intentar enviar mensaje de error")
-
 # --- WebSocket de audio ---
 @app.websocket("/ws/audio")
 async def ws_audio(websocket: WebSocket):
@@ -318,32 +293,12 @@ async def ws_audio(websocket: WebSocket):
     print("✅ [WS] Cliente WebSocket ACEPTADO")
     logger.info("Cliente WS conectado para audio")
 
-    audio_buffer = AudioBuffer()
-
     try:
         while True:
             message = await websocket.receive()
 
-            # --- Caso: audio binario ---
-            if "bytes" in message:
-                data = message["bytes"]
-
-                if not data:
-                    qa_logger.mark("interaction_start")
-                    qa_logger.mark("audio_received")
-                    phrase = audio_buffer.flush()
-                    if phrase:
-                        await procesar_audio_phrase(websocket, phrase)
-                    continue
-
-                phrase = audio_buffer.add_chunk(data)
-                if phrase:
-                    qa_logger.mark("interaction_start")
-                    qa_logger.mark("audio_received")
-                    await procesar_audio_phrase(websocket, phrase)
-
             # --- Caso: mensaje de control (texto JSON) ---
-            elif "text" in message:
+            if "text" in message:
                 try:
                     payload = json.loads(message["text"])
                     print(f"📨 [WS] Mensaje recibido: {payload}")
@@ -352,19 +307,7 @@ async def ws_audio(websocket: WebSocket):
                     if payload.get("type") == "mark":
                         qa_logger.mark(payload.get("label"))
 
-                    elif payload.get("type") == "register":
-                        websocket.session_id = payload.get("session_id")
-                        access_token = payload.get("access_token")
-                        mode = payload.get("mode", "whisper")  # 👈 Detectar modo browser_stt
-                        logger.info(
-                            f"WS REGISTER recibido: session_id={websocket.session_id}, "
-                            f"access_token_presente={bool(access_token)}, mode={mode}"
-                        )
-                        if access_token:
-                            sessions[websocket.session_id] = access_token
-                            logger.info(f"Session {websocket.session_id} registrada con access_token")
-
-                    # 👉 Nuevo caso: transcripción desde el browser (sin pasar por Whisper)
+                    # 👉 Transcripción desde el browser (Web Speech API)
                     elif payload.get("type") == "transcript":
                         text = (payload.get("text") or "").strip()
                         print(f"[BROWSER_STT] text={text!r}")

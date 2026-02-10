@@ -14,8 +14,11 @@ for _p in _env_candidates:
 else:
     load_dotenv()
 
-# --- HeyGen ---
-HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
+# --- Live Avatar ---
+LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY", "")
+LIVEAVATAR_API_URL = os.getenv("LIVEAVATAR_API_URL", "https://api.liveavatar.com")
+
+# --- Avatar (compartido: LiveAvatar usa estos si están definidos) ---
 AVATAR_ID = os.getenv("AVATAR_ID", "")
 VOICE_ID = os.getenv("VOICE_ID", "")
 LANGUAGE = os.getenv("LANGUAGE", "Spanish")

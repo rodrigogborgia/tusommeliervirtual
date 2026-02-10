@@ -5,7 +5,7 @@ from qa_log import QALog
 logger = logging.getLogger("app-flow")
 qa_logger = QALog()
 
-def main(mode="Presentar", query: str = None, response: str = None, correction: str = None):
+def main(mode="Presentar", query: str = None, response: str = None, correction: str = None, skip_save: bool = False):
     """
     Flujo principal: recibe texto desde el front.
     """
@@ -44,31 +44,34 @@ def main(mode="Presentar", query: str = None, response: str = None, correction: 
             return {"respuesta": respuesta}
 
         elif mode == "Presentar":
+            llm_time_ms = None
             # Primero buscamos en el log
             cached_entries = qa_logger.find_in_log(query=texto_usuario)
             if cached_entries:
                 last_entry = cached_entries[-1]
                 respuesta = last_entry.get("correction") or last_entry.get("response")
+                llm_time_ms = 0  # cache hit
             else:
                 qa_logger.mark("llm_start")
                 respuesta = llm_client.ask_llm(query=texto_usuario, instruction=instruction)
                 qa_logger.mark("llm_done")
-                qa_logger.diff("llm_start", "llm_done")
+                d = qa_logger.diff("llm_start", "llm_done")
+                llm_time_ms = round(d * 1000, 1) if d is not None else None
 
-                qa_logger.save_interaction(query=texto_usuario, response=respuesta, correction=None)
+                if not skip_save:
+                    qa_logger.save_interaction(query=texto_usuario, response=respuesta, correction=None)
 
             logger.info(f"FLOW_OUTPUT: {respuesta}")
 
-            # 🔊 Generación de voz/avatar
+            # 🔊 Generación de voz/avatar (backend no la ejecuta; el frontend lo hace)
             qa_logger.mark("avatar_start")
-            # aquí deberías invocar el motor de voz/avatar con `respuesta`
             qa_logger.mark("avatar_done")
             qa_logger.diff("avatar_start", "avatar_done")
 
             qa_logger.mark("interaction_end")
             qa_logger.diff("interaction_start", "interaction_end")
 
-            return {"respuesta": respuesta}
+            return {"respuesta": respuesta, "llm_time_ms": llm_time_ms}
 
         elif mode == "Confirmar":
             # Usamos la corrección como respuesta final (si existe)

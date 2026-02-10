@@ -24,6 +24,11 @@ body.hearing {
   background-color: var(--bg-color);
 }
 
+body.listening {
+  --bg-color: #1a4d7a; /* un poco más claro que el default cuando el usuario habla (escuchando) */
+  background-color: var(--bg-color);
+}
+
 /* Selector de micrófono */
 #micSelect {
   margin-bottom: 1rem;

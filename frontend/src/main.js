@@ -1,4 +1,4 @@
-import StreamingAvatar, { StreamingEvents, TaskMode, TaskType } from "@heygen/streaming-avatar";
+import { Room, RoomEvent, createLocalAudioTrack } from "livekit-client";
 
 // --- Métricas de performance ---
 const marks = {};
@@ -6,13 +6,11 @@ const marks = {};
 function mark(label) {
   const t = performance.now();
   marks[label] = t;
-  console.log(`MARK: ${label}`, Math.round(t));
 }
 
 function diff(start, end) {
   if (marks[start] && marks[end]) {
     const delta = marks[end] - marks[start];
-    console.log(`DIFF ${start} -> ${end}: ${Math.round(delta)} ms`);
     return delta;
   }
 }
@@ -23,9 +21,19 @@ const avatarContainer = document.getElementById("avatarContainer");
 const micSelect = document.getElementById("micSelect");
 const transcriptDiv = document.getElementById("transcript"); // 👈 feedback en vivo
 
-let avatar = null;
-let sessionId = null;
-let accessToken = null;
+/** @type {import("livekit-client").Room | null} - Room cuando la sesión la inicia el backend (prestarted) */
+let liveAvatarRoom = null;
+/** Track del micrófono publicado en la sala; se mutea mientras el avatar habla para no interrumpir */
+let publishedMicTrack = null;
+/** Para logs USER_SPEECH_BEGIN / END / DURATION (eventos user.speak_started, user.speak_ended, user.transcription) */
+let userSpeechStartTs = null;
+let userSpeechEndTs = null;
+/** Par start/end del turno actual; se fija en speak_ended para no mezclar con un speak_started posterior */
+let pendingSpeechStartTs = null;
+let pendingSpeechEndTs = null;
+const LIVEKIT_AGENT_TOPIC = "agent-control";
+const LIVEKIT_RESPONSE_TOPIC = "agent-response";
+const HEYGEN_PARTICIPANT_ID = "heygen";
 let avatarReady = false;
 let currentMode = "Presentar";
 let audioCtx, sourceNode, processorNode, ws;
@@ -39,81 +47,195 @@ let audioInUtterance = false;
 let pendingSpeakQueue = [];
 let browserRecognition = null;
 let isSpeaking = false;
+let lastFinalText = "";
+let silenceTimer = null;
+const SILENCE_COMMIT_MS = 900;
+let sttEnabled = true;
+let speechStartTs = null;
+let lastDetectedText = "";
+const USE_SDK_STT = false;
+// Para QA: guardamos timestamps del último habla hasta enviar
+let lastSpeechStartTs = null;
+let lastSpeechEndTs = null;
+let pendingQALog = null;
+
+function resetSttState() {
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
+  }
+  lastFinalText = "";
+}
+
+
+function disableStt() {
+  sttEnabled = false;
+  resetSttState();
+  try { browserRecognition?.abort(); } catch {}
+  try { browserRecognition?.stop(); } catch {}
+}
+
+function enableStt() {
+  sttEnabled = true;
+  resetSttState();
+  try { browserRecognition?.start(); } catch {}
+}
 
 function setListeningBackground() {
   document.body.classList.remove("speaking");
   document.body.classList.remove("hearing");
+  document.body.classList.remove("listening");
   if (transcriptDiv) {
     transcriptDiv.innerHTML = "";
     transcriptDiv.style.display = "none";
   }
-  console.log("🎨 Fondo: escuchando");
+  console.log("Fondo: oyendo...");
+}
+
+function setUserSpeakingBackground() {
+  document.body.classList.remove("speaking");
+  document.body.classList.remove("hearing");
+  document.body.classList.add("listening");
+  console.log("Fondo: escuchando");
 }
 
 function setSpeakingBackground() {
   document.body.classList.add("speaking");
   document.body.classList.remove("hearing");
-  console.log("🎨 Fondo: hablando");
+  document.body.classList.remove("listening");
+  console.log("Fondo: avatar respondiendo");
 }
 
 function setHearingBackground() {
   if (document.body.classList.contains("speaking")) return;
   document.body.classList.add("hearing");
-  console.log("🎨 Fondo: oyendo");
+  console.log("Fondo: oyendo");
 }
 
 function clearHearingBackground() {
   document.body.classList.remove("hearing");
 }
 
+async function flushQALog(avatarStartTs) {
+  if (!pendingQALog) return;
+  const m = pendingQALog.metrics;
+  if (avatarStartTs != null && m.speak_requested_ts != null) {
+    m.avatar_start_ts = avatarStartTs;
+    m.heygen_latency_ms = Math.round(avatarStartTs - m.speak_requested_ts);
+  }
+  try {
+    await fetch("/api/qa/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: pendingQALog.query,
+        response: pendingQALog.response,
+        correction: null,
+        metrics: m,
+      }),
+    });
+  } catch (e) {
+    console.warn("No se pudo guardar QA log:", e);
+  }
+  pendingQALog = null;
+}
 
-function handleBotResponse(userText, botText) {
+
+function handleBotResponse(userText, botText, qaContext) {
+  const responseReceivedTs = performance.now();
   mark("response_received");
-  console.log("USER_SAID:", userText);
   console.log("AVATAR_RESPONDED:", botText);
   if (transcriptDiv) {
-    transcriptDiv.innerHTML = `<div>Usuario: ${userText}</div><div>Sommelier: ${botText}</div>`;
+    transcriptDiv.innerHTML = `<div>Usuario: ${userText}</div>`;
     transcriptDiv.style.display = "block";
   }
   diff("audio_start", "response_received");
+  pendingQALog = {
+    query: userText,
+    response: botText,
+    metrics: {
+      ...qaContext,
+      response_received_ts: responseReceivedTs,
+      llm_time_ms: qaContext?.llm_time_ms ?? null,
+    },
+  };
   if (botText) {
     handleAvatarSpeak(botText);
+  } else {
+    flushQALog(null);
   }
 }
 
 async function handleAvatarSpeak(text) {
-  if (!avatar || !avatarReady) {
-    // Guardar para reproducir cuando el avatar esté listo
+  if (!avatarReady) {
     pendingSpeakQueue.push(text);
     console.warn("Avatar no listo aún, se encoló speak()");
     return;
   }
+  const speakRequestedTs = performance.now();
+  if (pendingQALog) pendingQALog.metrics.speak_requested_ts = speakRequestedTs;
   try {
-    await avatar.speak({
-      text,
-      task_type: TaskType.REPEAT,
-      taskMode: TaskMode.SYNC,
-    });
+    if (liveAvatarRoom && liveAvatarRoom.state === "connected") {
+      const payload = { event_type: "avatar.speak_text", text };
+      liveAvatarRoom.localParticipant.publishData(
+        new TextEncoder().encode(JSON.stringify(payload)),
+        { reliable: true, topic: LIVEKIT_AGENT_TOPIC }
+      );
+    }
   } catch (err) {
     console.error("Error invoking speak:", err);
+    flushQALog(null);
   }
 }
 
-async function sendTranscriptViaHttp(text) {
+async function sendTranscriptViaHttp(text, speechMetrics = {}) {
   try {
     const t0 = performance.now();
     const res = await fetch("/api/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: currentMode || "Presentar", query: text }),
+      body: JSON.stringify({
+        mode: currentMode || "Presentar",
+        query: text,
+        metrics: speechMetrics,
+      }),
     });
     const t1 = performance.now();
     const data = await res.json();
-    console.log(`⏱️ tiempo chat gpt ${Math.round(t1 - t0)} ms`);
+    const llmTime = data?.llm_time_ms ?? Math.round(t1 - t0);
+    console.log(`⏱️ tiempo chat gpt ${llmTime} ms`);
     const botText = data?.respuesta || data?.error || "";
-    handleBotResponse(text, botText);
+    handleBotResponse(text, botText, {
+      ...speechMetrics,
+      llm_time_ms: data?.llm_time_ms ?? Math.round(t1 - t0),
+    });
   } catch (e) {
     console.error("Error llamando /api/query:", e);
+  }
+}
+
+/** Opción A: transcripción de Live Avatar (FULL mode) → ChatGPT → avatar.speak_text */
+async function onLiveAvatarTranscription(userText) {
+  try {
+    const t0 = performance.now();
+    const res = await fetch("/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: currentMode || "Presentar",
+        query: userText,
+        metrics: {},
+      }),
+    });
+    const t1 = performance.now();
+    const data = await res.json();
+    const llmTime = data?.llm_time_ms ?? Math.round(t1 - t0);
+    const botText = data?.respuesta || data?.error || "";
+    console.log(`⏱️ [Live Avatar STT → ChatGPT] ${llmTime} ms`);
+    handleBotResponse(userText, botText, { llm_time_ms: llmTime });
+  } catch (e) {
+    console.error("Error /api/query tras user.transcription:", e);
+    flushQALog(null);
   }
 }
 
@@ -130,7 +252,7 @@ function sendTranscriptViaWs(text) {
   return true;
 }
 
-async function sendTranscript(text) {
+async function sendTranscript(text, speechMetrics = {}) {
   if (sendTranscriptViaWs(text)) return;
   if (ws) {
     console.warn("⚠️ WebSocket NO está OPEN, usando /api/query");
@@ -140,7 +262,7 @@ async function sendTranscript(text) {
   } else {
     console.log("ℹ️ WS desactivado, usando /api/query");
   }
-  await sendTranscriptViaHttp(text);
+  await sendTranscriptViaHttp(text, speechMetrics);
 }
 
 async function ensureMicPermission() {
@@ -194,119 +316,115 @@ startButton.addEventListener("click", async () => {
     await populateMicSelect();
 
     const resp = await fetch("/api/session/start", { method: "POST" });
-    if (!resp.ok) throw new Error(`Error iniciando avatar: ${resp.status} ${resp.statusText}`);
-
-    const json = await resp.json();
-    const { token, avatar_id, voice_id, language } = json;
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const hint = json.hint ? "\n\n" + json.hint : "";
+      const details = json.details;
+      const detailsStr = typeof details === "string" ? details : (details?.message || details?.error || resp.statusText || "Error desconocido");
+      throw new Error(detailsStr + hint);
+    }
+    const { avatar_id, voice_id } = json;
     console.log("Session start data:", json);
 
-    // 👉 guardar en variables globales
     globalVoiceId = voice_id;
     globalAvatarId = avatar_id;
 
-    if (!token) {
-      alert("No se recibió token desde el backend.");
+    if (!json.prestarted || !json.livekit_url || !json.livekit_client_token) {
+      alert("El backend no devolvió sesión Live Avatar (livekit_url / livekit_client_token).");
       return;
     }
 
-    // 👉 Crear instancia del avatar con el token
-    avatar = new StreamingAvatar({ token });
+    // --- Live Avatar (prestarted): backend ya llamó start; conectamos con Room a LiveKit ---
+    liveAvatarRoom = new Room();
+    const mediaStream = new MediaStream();
 
-    // 👉 Eventos de habla para manejar fondo y pausa de escucha
-    avatar.on(StreamingEvents.AVATAR_START_TALKING, () => {
-      setSpeakingBackground();
-      isSpeaking = true;
-      try { browserRecognition?.stop(); } catch {}
-    });
-    avatar.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
-      isSpeaking = false;
-      try { browserRecognition?.start(); } catch {}
-      setListeningBackground();
-    });
-
-    // 👉 Enganchar STREAM_READY: entrega video + audio
-    avatar.on(StreamingEvents.STREAM_READY, (event) => {
-      if (event.detail && videoElement) {
-        videoElement.srcObject = event.detail;
-        videoElement.volume = 1.0;
-        videoElement.muted = false;
-        videoElement.onloadedmetadata = () => {
-          videoElement.play().catch(console.error);
-        };
-        // 👉 Métricas de reproducción
-        videoElement.onplay = () => {
-          mark("avatar_start");
-          ws?.send(JSON.stringify({ type: "mark", label: "avatar_start", ts: performance.now() }));
-        };
-        videoElement.onended = () => {
-          mark("avatar_done");
-          ws?.send(JSON.stringify({ type: "mark", label: "avatar_done", ts: performance.now() }));
-          mark("interaction_end");
-          ws?.send(JSON.stringify({ type: "mark", label: "interaction_end", ts: performance.now() }));
-          diff("audio_start", "avatar_done");
-          diff("interaction_start", "interaction_end");
-        };
-      }
-      avatarReady = true;
-      if (pendingSpeakQueue.length > 0) {
-        const queue = pendingSpeakQueue;
-        pendingSpeakQueue = [];
-        // Reproducir en orden las respuestas pendientes
-        queue.reduce(
-          (p, t) => p.then(() => handleAvatarSpeak(t)),
-          Promise.resolve()
-        );
-      }
-      console.log("STREAM_READY recibido, avatar conectado con audio+video");
-      console.log("SDK session_id activo:", avatar.sessionId);
-    });
-
-    // 👉 Crear sesión en HeyGen
-    const sessionInfo = await avatar.createStartAvatar({
-      avatarName: avatar_id,
-      voiceId: voice_id,
-      language,
-      quality: "high",
-      video: true
-    });
-
-    if (sessionInfo?.session_id && sessionInfo?.access_token) {
-      sessionId = sessionInfo.session_id;
-      accessToken = sessionInfo.access_token;
-      console.log("createStartAvatar devolvió:", sessionId, accessToken);
-
-      await fetch("/api/session/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, access_token: accessToken }),
-      });
-
-      // 👉 preparar audio del micrófono
-      const constraints = {
-        audio: {
-          deviceId: micSelect.value ? { exact: micSelect.value } : undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-          // En muchos mics USB el AGC amplifica el hiss/ruido y provoca "alucinaciones" en STT.
-          autoGainControl: false,
-          channelCount: 1,
+    liveAvatarRoom.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+      if (participant.identity !== HEYGEN_PARTICIPANT_ID) return;
+      if (track.kind === "video" || track.kind === "audio") {
+        mediaStream.addTrack(track.mediaStreamTrack);
+        const hasVideo = mediaStream.getVideoTracks().length > 0;
+        const hasAudio = mediaStream.getAudioTracks().length > 0;
+        if (hasVideo && hasAudio && videoElement) {
+          videoElement.srcObject = mediaStream;
+          videoElement.volume = 1.0;
+          videoElement.muted = false;
+          videoElement.onloadedmetadata = () => videoElement.play().catch(console.error);
+          avatarReady = true;
+          if (pendingSpeakQueue.length > 0) {
+            const queue = pendingSpeakQueue;
+            pendingSpeakQueue = [];
+            queue.reduce((p, t) => p.then(() => handleAvatarSpeak(t)), Promise.resolve());
+          }
+          console.log("LiveAvatar prestarted SESSION_STREAM_READY");
         }
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log("Micrófono en uso:", micSelect.value);
-      micSelect.disabled = true;
-      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      }
+    });
 
-      // 👉 Usar STT nativo del navegador
-      await startListeningBrowserSTT(stream);
-    } else {
-      console.error("Respuesta inesperada de createStartAvatar:", sessionInfo);
-      alert("No se pudo iniciar la sesión del avatar (faltan credenciales).");
-    }
+    liveAvatarRoom.on(RoomEvent.DataReceived, (msg, _p, _r, topic) => {
+      if (topic !== LIVEKIT_RESPONSE_TOPIC) return;
+      try {
+        const ev = JSON.parse(new TextDecoder().decode(msg));
+        if (ev.event_type === "avatar.speak_started") {
+          const avatarStartTs = performance.now();
+          flushQALog(avatarStartTs);
+          setSpeakingBackground();
+          isSpeaking = true;
+          disableStt();
+        } else if (ev.event_type === "avatar.speak_ended") {
+          isSpeaking = false;
+          enableStt();
+          setListeningBackground();
+          if (publishedMicTrack) publishedMicTrack.unmute();
+        } else if (ev.event_type === "user.speak_started") {
+          userSpeechStartTs = performance.now();
+          console.log("USER_SPEAK_BEGIN", Math.round(performance.now()));
+          setUserSpeakingBackground();
+        } else if (ev.event_type === "user.speak_ended") {
+          userSpeechEndTs = performance.now();
+          pendingSpeechStartTs = userSpeechStartTs;
+          pendingSpeechEndTs = userSpeechEndTs;
+        } else if (ev.event_type === "user.transcription") {
+          const text = (ev.text || "").trim();
+          const now = performance.now();
+          const durationMs = userSpeechStartTs != null ? Math.max(0, Math.round(now - userSpeechStartTs)) : 0;
+          console.log("USER_SPEAK_ENDED", Math.round(now), ", DURATION", durationMs, "ms, TRANSCRIPTION", text);
+          setListeningBackground();
+          // Opción A: STT de Live Avatar → interrumpir su LLM → ChatGPT → avatar.speak_text
+          if (!text || text.length < 2) return;
+          if (publishedMicTrack) publishedMicTrack.mute();
+          // Cancelar respuesta automática del LLM de Live Avatar
+          try {
+            liveAvatarRoom.localParticipant.publishData(
+              new TextEncoder().encode(JSON.stringify({ event_type: "avatar.interrupt" })),
+              { reliable: true, topic: LIVEKIT_AGENT_TOPIC }
+            );
+          } catch (e) {
+            console.warn("avatar.interrupt error:", e);
+          }
+          // Llamar a nuestro LLM (ChatGPT) y luego hacer hablar al avatar
+          onLiveAvatarTranscription(text);
+        }
+      } catch (_) {}
+    });
 
+    await liveAvatarRoom.connect(json.livekit_url, json.livekit_client_token);
+
+    // Opción A: publicar micrófono para que Live Avatar haga STT (FULL mode) y emitir user.transcription
+    const audioTrack = await createLocalAudioTrack({
+      deviceId: micSelect?.value ? { exact: micSelect.value } : undefined,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false,
+    });
+    await liveAvatarRoom.localParticipant.publishTrack(audioTrack, { name: "microphone" });
+    publishedMicTrack = audioTrack;
+    micSelect.disabled = true;
+    setListeningBackground();
+    console.log("🎤 Micrófono publicado en la sala; Live Avatar STT activo (user.transcription → ChatGPT → avatar.speak_text)");
   } catch (err) {
     console.error("Error iniciando avatar:", err);
-    alert("Error iniciando avatar. Revisá la consola.");
+    const msg = (err.message || String(err)).slice(0, 300);
+    alert("Error iniciando avatar: " + (msg.length >= 300 ? msg + "…" : msg));
   }
 });
 
@@ -327,9 +445,9 @@ async function startListeningBrowserSTT(stream) {
 
   const recognition = new SpeechRecognition();
   browserRecognition = recognition;
-  recognition.lang = "es-ES";
+  recognition.lang = "es-AR";
   recognition.continuous = true;  // Escucha continua
-  recognition.interimResults = false;  // Solo resultados finales (más confiables)
+  recognition.interimResults = true;  // Parciales para feedback inmediato
   recognition.maxAlternatives = 1;
 
   let isProcessing = false;
@@ -341,27 +459,96 @@ async function startListeningBrowserSTT(stream) {
 
   recognition.onspeechstart = () => {
     setHearingBackground();
+    speechStartTs = performance.now();
+    console.log(`SPEECH INIT ${Math.round(speechStartTs)}ms`);
   };
 
   recognition.onspeechend = () => {
     clearHearingBackground();
+    const endTs = performance.now();
+    console.log(`SPEECH END ${Math.round(endTs)}ms`);
+    if (speechStartTs != null) {
+      lastSpeechStartTs = speechStartTs;
+      lastSpeechEndTs = endTs;
+      console.log(`SPEECH DURATION ${Math.round(endTs - speechStartTs)}ms`);
+      if (lastDetectedText) {
+        console.log(`SPEECH DETECTED ${lastDetectedText}`);
+      }
+    }
+    speechStartTs = null;
+  };
+
+  const normalizeTranscript = (text) => {
+    let t = (text || "").trim();
+    if (!t) return "";
+    // Quitar fillers comunes
+    t = t.replace(/\b(eh|emm|mmm|este|a ver)\b/gi, "").replace(/\s{2,}/g, " ").trim();
+    // Capitalizar inicio
+    t = t.charAt(0).toUpperCase() + t.slice(1);
+    return t;
+  };
+
+  const scheduleFinalCommit = () => {
+    if (silenceTimer) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+    silenceTimer = setTimeout(async () => {
+      const finalText = normalizeTranscript(lastFinalText);
+      if (!finalText) return;
+      lastFinalText = "";
+      mark("audio_start");
+      mark("audio_stop");
+      const speechMetrics = {
+        speech_start_ts: lastSpeechStartTs,
+        speech_end_ts: lastSpeechEndTs,
+        speech_duration_ms: lastSpeechStartTs != null && lastSpeechEndTs != null
+          ? Math.round(lastSpeechEndTs - lastSpeechStartTs) : null,
+      };
+      console.log("🎙️ Detectado (final):", finalText);
+      console.log("📤 Enviando transcripción al backend...");
+      await sendTranscript(finalText, speechMetrics);
+      lastSpeechStartTs = null;
+      lastSpeechEndTs = null;
+      silenceTimer = null;
+    }, SILENCE_COMMIT_MS);
   };
 
   recognition.onresult = async (event) => {
-    const last = event.results.length - 1;
-    const transcript = event.results[last][0].transcript.trim();
-    
-    if (!transcript || isProcessing) return;
+    if (!sttEnabled || isSpeaking) return;
+    let interimText = "";
+    let finalText = "";
 
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const res = event.results[i];
+      const text = res[0]?.transcript || "";
+      if (res.isFinal) {
+        finalText += text;
+      } else {
+        interimText += text;
+      }
+    }
+
+    const interim = interimText.trim();
+    const final = finalText.trim();
+
+    if (interim) {
+      lastDetectedText = interim;
+      if (transcriptDiv) {
+        transcriptDiv.innerHTML = `<div>Usuario: ${interim}</div>`;
+        transcriptDiv.style.display = "block";
+      }
+    }
+
+    if (final) {
+      lastDetectedText = final;
+      lastFinalText = `${lastFinalText} ${final}`.trim();
+      scheduleFinalCommit();
+    }
+
+    if (isProcessing) return;
     isProcessing = true;
-    mark("audio_start");
-    console.log("🎙️ Detectado:", transcript);
-    mark("audio_stop");
-    console.log("📤 Enviando transcripción al backend...");
-    await sendTranscript(transcript);
-
-    // Reset flag después de un delay para permitir nuevas frases
-    setTimeout(() => { isProcessing = false; }, 2000);
+    setTimeout(() => { isProcessing = false; }, 600);
   };
 
   recognition.onerror = (event) => {
@@ -369,11 +556,16 @@ async function startListeningBrowserSTT(stream) {
     if (event.error === "no-speech") {
       console.log("Sin speech detectado, continuando...");
     }
+    resetSttState();
     isProcessing = false;
   };
 
   recognition.onend = () => {
     if (isSpeaking) {
+      return;
+    }
+    resetSttState();
+    if (!sttEnabled) {
       return;
     }
     console.log("🔄 SpeechRecognition terminó, reiniciando...");
@@ -476,20 +668,11 @@ async function startListeningWebSocket(stream) {
         ts: performance.now() 
       }));
 
-      // 👉 Disparar la voz directamente desde el SDK
-      if (avatar) {
-        try {
-          await avatar.speak({
-            text: respuestaTexto,
-            // SpeakRequest (SDK): { text, task_type/taskType, taskMode }
-            task_type: TaskType.REPEAT, // porque tu LLM ya arma el texto
-            taskMode: TaskMode.ASYNC,
-          });
-        } catch (err) {
-          console.error("Error invoking speak:", err);
-        }
-      } else {
-        console.warn("Avatar no inicializado aún, se omitió speak()");
+      // 👉 Disparar la voz (LiveAvatar o HeyGen)
+      try {
+        await handleAvatarSpeak(respuestaTexto);
+      } catch (err) {
+        console.error("Error invoking speak:", err);
       }
     }
 
@@ -546,16 +729,8 @@ async function enviarConsulta(query) {
 
       console.log("AVATAR_RESPONDED (consulta):", texto);
 
-      // 👉 Disparar la voz desde el SDK solo si el avatar está listo
-      if (avatar && avatarReady) {
-        await avatar.speak({
-          text: texto,
-          task_type: TaskType.REPEAT,
-          taskMode: TaskMode.ASYNC,
-        });
-      } else {
-        console.warn("Avatar no listo aún, se omitió addTask");
-      }
+      // 👉 Disparar la voz (LiveAvatar o HeyGen)
+      await handleAvatarSpeak(texto);
     }
     while (transcriptDiv.childNodes.length > 50) {
       transcriptDiv.removeChild(transcriptDiv.firstChild);
