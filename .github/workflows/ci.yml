@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install backend dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
 
       - name: Show installed packages
         run: pip list | grep openai
