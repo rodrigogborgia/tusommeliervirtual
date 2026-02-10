@@ -64,6 +64,8 @@ LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY")
 LIVEAVATAR_API_URL = os.getenv("LIVEAVATAR_API_URL", "https://api.liveavatar.com")
 AVATAR_ID = os.getenv("AVATAR_ID", "fc9c1f9f-bc99-4fd9-a6b2-8b4b5669a046")
 LANGUAGE = os.getenv("LANGUAGE", "Spanish")
+# Tolerancia de silencio (ms) antes de considerar "fin de habla". Si hablás pausado y corta la frase, subí este valor (ej. 1200–2000).
+LIVEAVATAR_END_OF_SPEECH_MS = os.getenv("LIVEAVATAR_END_OF_SPEECH_MS", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PIPELINE_NAME = os.getenv("PIPELINE_NAME", "unknown-pipeline")
 BUILD_ID = os.getenv("BUILD_ID", "unknown-build")
@@ -148,6 +150,15 @@ def start_session():
     body["avatar_persona"] = {
         "language": _language_code(LANGUAGE),
     }
+    # Parámetro opcional: mayor valor = espera más silencio antes de "fin de habla" (menos cortes si hablás pausado).
+    if LIVEAVATAR_END_OF_SPEECH_MS:
+        try:
+            ms = int(LIVEAVATAR_END_OF_SPEECH_MS)
+            if ms > 0:
+                body["avatar_persona"]["end_of_speech_timeout_ms"] = ms
+                logger.info(f"LiveAvatar end_of_speech_timeout_ms={ms}")
+        except ValueError:
+            pass
     try:
         r = requests.post(url, headers=headers, json=body, timeout=15)
         if r.status_code != 200:

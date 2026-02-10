@@ -34,6 +34,10 @@ let pendingSpeechEndTs = null;
 const LIVEKIT_AGENT_TOPIC = "agent-control";
 const LIVEKIT_RESPONSE_TOPIC = "agent-response";
 const HEYGEN_PARTICIPANT_ID = "heygen";
+/** Tras cada transcripción esperamos este ms; si en ese tiempo hay user.speak_started, no enviamos y acumulamos más (tolerancia al que habla pausado). */
+const LIVEAVATAR_COMMIT_DELAY_MS = 700;
+let liveAvatarCommitTimer = null;
+let liveAvatarPendingQuery = "";
 let avatarReady = false;
 let currentMode = "Presentar";
 let audioCtx, sourceNode, processorNode, ws;
@@ -381,6 +385,13 @@ startButton.addEventListener("click", async () => {
           userSpeechStartTs = performance.now();
           console.log("USER_SPEAK_BEGIN", Math.round(performance.now()));
           setUserSpeakingBackground();
+          // Tolerancia: si había un commit pendiente, cancelar y seguir acumulando (el usuario siguió hablando).
+          if (liveAvatarCommitTimer) {
+            clearTimeout(liveAvatarCommitTimer);
+            liveAvatarCommitTimer = null;
+            if (publishedMicTrack) publishedMicTrack.unmute();
+            console.log("🔄 Tolerancia: sigue hablando, se cancela envío y se sigue escuchando");
+          }
         } else if (ev.event_type === "user.speak_ended") {
           userSpeechEndTs = performance.now();
           pendingSpeechStartTs = userSpeechStartTs;
@@ -391,10 +402,14 @@ startButton.addEventListener("click", async () => {
           const durationMs = userSpeechStartTs != null ? Math.max(0, Math.round(now - userSpeechStartTs)) : 0;
           console.log("USER_SPEAK_ENDED", Math.round(now), ", DURATION", durationMs, "ms, TRANSCRIPTION", text);
           setListeningBackground();
-          // Opción A: STT de Live Avatar → interrumpir su LLM → ChatGPT → avatar.speak_text
           if (!text || text.length < 2) return;
+          // Acumular: si el nuevo texto incluye el pendiente (transcripción acumulativa), reemplazar; si no, concatenar.
+          if (liveAvatarPendingQuery && text.indexOf(liveAvatarPendingQuery) === 0) {
+            liveAvatarPendingQuery = text;
+          } else {
+            liveAvatarPendingQuery = liveAvatarPendingQuery ? liveAvatarPendingQuery + " " + text : text;
+          }
           if (publishedMicTrack) publishedMicTrack.mute();
-          // Cancelar respuesta automática del LLM de Live Avatar
           try {
             liveAvatarRoom.localParticipant.publishData(
               new TextEncoder().encode(JSON.stringify({ event_type: "avatar.interrupt" })),
@@ -403,10 +418,26 @@ startButton.addEventListener("click", async () => {
           } catch (e) {
             console.warn("avatar.interrupt error:", e);
           }
-          // Llamar a nuestro LLM (ChatGPT) y luego hacer hablar al avatar
-          onLiveAvatarTranscription(text);
+          // No enviar aún: esperar LIVEAVATAR_COMMIT_DELAY_MS; si en ese tiempo hay user.speak_started, se cancela y se sigue acumulando.
+          if (liveAvatarCommitTimer) clearTimeout(liveAvatarCommitTimer);
+          liveAvatarCommitTimer = setTimeout(() => {
+            liveAvatarCommitTimer = null;
+            const toSend = liveAvatarPendingQuery.trim();
+            liveAvatarPendingQuery = "";
+            if (!toSend) return;
+            console.log("✅ Envío acumulado a ChatGPT:", toSend);
+            onLiveAvatarTranscription(toSend);
+          }, LIVEAVATAR_COMMIT_DELAY_MS);
         }
       } catch (_) {}
+    });
+
+    liveAvatarRoom.on(RoomEvent.Disconnected, () => {
+      if (liveAvatarCommitTimer) {
+        clearTimeout(liveAvatarCommitTimer);
+        liveAvatarCommitTimer = null;
+      }
+      liveAvatarPendingQuery = "";
     });
 
     await liveAvatarRoom.connect(json.livekit_url, json.livekit_client_token);
