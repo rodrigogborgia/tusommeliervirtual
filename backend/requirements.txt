@@ -1,8 +1,8 @@
+# Backend Sommelier Virtual (Live Avatar). Instalar: pip install -r backend/requirements.txt
 fastapi
 uvicorn[standard]
 requests
 openai
 python-dotenv
 python-multipart
-rapidfuzz
 websockets>=12.0
