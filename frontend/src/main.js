@@ -320,7 +320,9 @@ startButton.addEventListener("click", async () => {
     if (!resp.ok) {
       const hint = json.hint ? "\n\n" + json.hint : "";
       const details = json.details;
-      const detailsStr = typeof details === "string" ? details : (details?.message || details?.error || resp.statusText || "Error desconocido");
+      let detailsStr = typeof details === "string" ? details : (details?.message ?? details?.error ?? null);
+      if (detailsStr == null && details && typeof details === "object") detailsStr = JSON.stringify(details);
+      if (!detailsStr) detailsStr = resp.statusText || "Error desconocido";
       throw new Error(detailsStr + hint);
     }
     const { avatar_id, voice_id } = json;

@@ -88,6 +88,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Devuelve siempre JSON en errores 500 para que el frontend pueda mostrar el mensaje."""
+    logger.exception(f"Error no controlado: {exc}")
+    return JSONResponse(
+        {
+            "error": "internal_error",
+            "details": str(exc),
+        },
+        status_code=500,
+    )
+
+
 # --- BASE_DIR para frontend ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIST_DIR = os.path.join(BASE_DIR, "frontend", "dist")
